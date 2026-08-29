@@ -1,0 +1,4 @@
+.temp/
+supabase/migrations
+.env
+.env.*
