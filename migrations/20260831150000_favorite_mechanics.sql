@@ -97,7 +97,7 @@ $$;
 
 create or replace function public.create_favorite_mechanic_invite(p_provider_id uuid)
 returns public.favorite_mechanic_invites
-language plpgsql security invoker set search_path = public
+language plpgsql security definer set search_path = public
 as $$
 declare result public.favorite_mechanic_invites;
 begin
