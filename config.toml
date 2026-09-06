@@ -4,6 +4,9 @@
 # working directory name when running `supabase init`.
 project_id = "sos-veiculo"
 
+[functions.process-product-notifications]
+verify_jwt = false
+
 [functions.register-account]
 verify_jwt = false
 
@@ -17,6 +20,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.notify-service-request-dispatches]
+verify_jwt = false
+
+[functions.notify-favorite-mechanic-invite]
 verify_jwt = false
 
 [functions.iugu-webhook]
