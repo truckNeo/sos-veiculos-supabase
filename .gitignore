@@ -1,4 +1,6 @@
 .temp/
 supabase/migrations
+supabase/functions
+supabase/config.toml
 .env
 .env.*

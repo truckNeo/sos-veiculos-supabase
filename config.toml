@@ -22,6 +22,12 @@ verify_jwt = false
 [functions.iugu-webhook]
 verify_jwt = false
 
+[functions.asaas-operation-webhook]
+verify_jwt = false
+
+[functions.asaas-webhook]
+verify_jwt = false
+
 [api]
 enabled = true
 # Port to use for the API URL.
