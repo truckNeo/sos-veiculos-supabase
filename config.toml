@@ -25,9 +25,6 @@ verify_jwt = false
 [functions.notify-favorite-mechanic-invite]
 verify_jwt = false
 
-[functions.iugu-webhook]
-verify_jwt = false
-
 [functions.asaas-operation-webhook]
 verify_jwt = false
 
