@@ -90,7 +90,7 @@ create index vehicle_share_recipient_idx on public.vehicle_share_invites(accepte
 create unique index vehicle_share_active_recipient_idx on public.vehicle_share_invites(vehicle_id, recipient_email)
   where status in ('pending','accepted');
 
-create table public.app_notifications (
+create table public.product_notifications (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles(id) on delete cascade,
   category text not null check (category in ('maintenance','appointments','sharing')),
@@ -101,14 +101,14 @@ create table public.app_notifications (
   read_at timestamptz,
   created_at timestamptz not null default now()
 );
-alter table public.app_notifications enable row level security;
-grant select on public.app_notifications to authenticated;
-grant update (read_at) on public.app_notifications to authenticated;
-create policy "own app notifications" on public.app_notifications
+alter table public.product_notifications enable row level security;
+grant select on public.product_notifications to authenticated;
+grant update (read_at) on public.product_notifications to authenticated;
+create policy "own app notifications" on public.product_notifications
   for select to authenticated using (user_id = auth.uid());
-create policy "mark own app notifications read" on public.app_notifications
+create policy "mark own app notifications read" on public.product_notifications
   for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
-create index app_notifications_user_idx on public.app_notifications(user_id, created_at desc);
+create index product_notifications_user_idx on public.product_notifications(user_id, created_at desc);
 
 create function public.complete_vehicle_maintenance(p_plan_id uuid, p_expected_due_date date, p_odometer integer default null)
 returns void language plpgsql security definer set search_path = public as $$
@@ -152,7 +152,7 @@ begin
   end if;
   insert into public.service_appointments(requester_id, provider_id, vehicle_id, starts_at, ends_at, description)
     values(auth.uid(), p_provider_id, p_vehicle_id, p_starts_at, finish, btrim(p_description)) returning id into new_id;
-  insert into public.app_notifications(user_id, category, title, body, resource_id, dedupe_key)
+  insert into public.product_notifications(user_id, category, title, body, resource_id, dedupe_key)
     values(p_provider_id, 'appointments', 'Novo agendamento', 'Você recebeu uma solicitação de horário.', new_id, new_id::text || ':requested');
   return new_id;
 end $$;
@@ -175,7 +175,7 @@ begin
     raise exception 'Conclusão indisponível.'; end if;
   update public.service_appointments set status = p_status, updated_at = now() where id = p_id;
   recipient := case when auth.uid() = appointment.requester_id then appointment.provider_id else appointment.requester_id end;
-  insert into public.app_notifications(user_id, category, title, body, resource_id, dedupe_key)
+  insert into public.product_notifications(user_id, category, title, body, resource_id, dedupe_key)
     values(recipient, 'appointments', 'Agendamento atualizado', 'Consulte o novo status do seu agendamento.', p_id, p_id::text || ':' || p_status)
     on conflict (dedupe_key) do nothing;
 end $$;
@@ -244,7 +244,7 @@ $$;
 create function public.enqueue_product_reminders()
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.app_notifications(user_id, category, title, body, resource_id, dedupe_key)
+  insert into public.product_notifications(user_id, category, title, body, resource_id, dedupe_key)
     select p.created_by, 'maintenance', 'Manutenção próxima', p.title, p.id,
       'maintenance:' || p.id::text || ':' || p.due_date::text
     from public.vehicle_maintenance_plans p join public.vehicles v on v.id = p.vehicle_id
@@ -252,7 +252,7 @@ begin
       (v.owner_profile_id = p.created_by or exists(select 1 from public.organizations o
        where o.id = v.organization_id and o.owner_id = p.created_by))
     on conflict (dedupe_key) do nothing;
-  insert into public.app_notifications(user_id, category, title, body, resource_id, dedupe_key)
+  insert into public.product_notifications(user_id, category, title, body, resource_id, dedupe_key)
     select recipient, 'appointments', 'Agendamento próximo', 'Consulte os detalhes do seu horário.', a.id,
       'appointment-reminder:' || a.id::text || ':' || recipient::text
     from public.service_appointments a cross join lateral unnest(array[a.requester_id,a.provider_id]) recipient
