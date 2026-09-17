@@ -1,0 +1,10 @@
+{
+  "name": "sos-product-contract-tests",
+  "private": true,
+  "scripts": {
+    "test": "node check-schema.cjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}
