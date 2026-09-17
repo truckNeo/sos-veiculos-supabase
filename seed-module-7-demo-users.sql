@@ -14,7 +14,7 @@ do $$
 declare
   document_secret text := 'COLE_AQUI_O_DOCUMENT_HASH_SECRET';
   driver_id uuid;
-  provider_id uuid;
+  v_provider_id uuid;
   driver_document_hash text;
   provider_document_hash text;
 begin
@@ -64,18 +64,18 @@ begin
     document_last4 = excluded.document_last4,
     updated_at = now();
 
-  select id into provider_id
+  select id into v_provider_id
   from auth.users
   where lower(email) = 'rafael@sosveiculo.demo'
   limit 1;
 
-  if provider_id is null then
-    provider_id := gen_random_uuid();
+  if v_provider_id is null then
+    v_provider_id := gen_random_uuid();
     insert into auth.users (
       id, aud, role, email, encrypted_password, email_confirmed_at,
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
-      provider_id, 'authenticated', 'authenticated', 'rafael@sosveiculo.demo',
+      v_provider_id, 'authenticated', 'authenticated', 'rafael@sosveiculo.demo',
       extensions.crypt('123456', extensions.gen_salt('bf')), now(),
       '{"provider":"email","providers":["email"]}'::jsonb,
       '{"full_name":"Rafael Mecânica Diesel"}'::jsonb, now(), now()
@@ -87,14 +87,14 @@ begin
         banned_until = null,
         deleted_at = null,
         updated_at = now()
-    where id = provider_id;
+    where id = v_provider_id;
   end if;
 
   insert into public.profiles (
     id, role, account_kind, full_name, phone, phone_lookup,
     document_hash, document_last4
   ) values (
-    provider_id, 'provider', 'company', 'Rafael Mecânica Diesel',
+    v_provider_id, 'provider', 'company', 'Rafael Mecânica Diesel',
     '+5511999997777', '11999997777', provider_document_hash, '0199'
   )
   on conflict (id) do update set
@@ -112,7 +112,7 @@ begin
     address_number, address_neighborhood, address_city, address_state,
     service_radius_km, is_available, is_verified
   ) values (
-    provider_id, 'Rafael Mecânica Diesel', 'Rafael Mecânica Diesel LTDA',
+    v_provider_id, 'Rafael Mecânica Diesel', 'Rafael Mecânica Diesel LTDA',
     '01001000', 'Praça da Sé', '100', 'Sé', 'São Paulo', 'SP',
     80, true, true
   )
@@ -132,9 +132,9 @@ begin
 
   insert into public.provider_services (provider_id, problem_type)
   values
-    (provider_id, 'engine'),
-    (provider_id, 'electrical'),
-    (provider_id, 'tire')
+    (v_provider_id, 'engine'),
+    (v_provider_id, 'electrical'),
+    (v_provider_id, 'tire')
   on conflict do nothing;
 end;
 $$;
