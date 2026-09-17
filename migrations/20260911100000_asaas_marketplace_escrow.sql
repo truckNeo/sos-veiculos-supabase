@@ -59,9 +59,10 @@ alter table public.service_payment_charges add column if not exists asaas_sandbo
 create index if not exists service_payment_charges_asaas_payment_idx
   on public.service_payment_charges(asaas_payment_id) where asaas_payment_id is not null;
 
+-- Solta a constraint ANTES do update: ela ainda só permite 'iugu', não 'asaas'.
+alter table public.service_payment_charges drop constraint if exists service_payment_charges_payment_provider_check;
 update public.service_payment_charges set payment_provider = 'asaas' where payment_provider = 'iugu';
 alter table public.service_payment_charges alter column payment_provider set default 'asaas';
-alter table public.service_payment_charges drop constraint if exists service_payment_charges_payment_provider_check;
 alter table public.service_payment_charges
   add constraint service_payment_charges_payment_provider_check
   check (payment_provider in ('mercado_pago', 'asaas'));
