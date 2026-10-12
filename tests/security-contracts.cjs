@@ -318,6 +318,52 @@ module.exports = async db => {
     'pagamento confirmado libera o deslocamento',
   );
 
+  // --- Fila de push do motorista ---------------------------------------
+
   await admin();
+  const pushed = async (requestId, kind) =>
+    (await q(`select * from driver_event_push_outbox where request_id=$1 and kind=$2`, [requestId, kind]))
+      .length;
+
+  // A proposta aceita criada em openRequest já deve ter enfileirado aviso.
+  ok((await pushed(departure, 'offer_received')) === 1, 'proposta enfileira push ao motorista');
+
+  // A transição para deslocamento também enfileirou, via gatilho de status.
+  ok((await pushed(departure, 'provider_en_route')) === 1, 'deslocamento enfileira push');
+
+  // Transição repetida não duplica o aviso.
+  await q(`update service_requests set status='provider_on_site' where id=$1`, [departure]);
+  await q(`update service_requests set status='provider_en_route' where id=$1`, [departure]);
+  await q(`update service_requests set status='provider_on_site' where id=$1`, [departure]);
+  ok((await pushed(departure, 'provider_on_site')) === 1, 'evento repetido não duplica push');
+
+  // A conferência avisa o motorista.
+  await q(
+    `update service_requests set workflow_phase='awaiting_driver_confirmation' where id=$1`,
+    [departure],
+  );
+  ok(
+    (await pushed(departure, 'awaiting_driver_confirmation')) === 1,
+    'conferência enfileira push',
+  );
+
+  // Disputa avisa os dois lados.
+  ok(
+    (await q(`select * from driver_event_push_outbox where request_id=$1 and kind='dispute_opened'`, [early]))
+      .length === 2,
+    'disputa avisa motorista e prestador',
+  );
+
+  // A fila é inacessível para quem não é service role: o grant foi revogado,
+  // então nem chega a ser uma questão de RLS.
+  await user(1);
+  await assert.rejects(
+    q('select * from driver_event_push_outbox'),
+    /permission denied/i,
+    'outbox fechado para authenticated',
+  );
+  checks++;
+  await admin();
+
   console.log(`PASS security contracts (${checks} checks)`);
 };
