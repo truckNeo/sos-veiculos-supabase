@@ -78,30 +78,59 @@ module.exports = async db => {
   ok((await q('select * from reviews where request_id=$1', [request])).length === 1, 'driver review stored');
 
   // O prestador selecionado avalia o motorista num atendimento sem avaliação.
+  // provider_id fica nulo: quem está sendo avaliado é o motorista.
   const second = id(301);
   await openRequest(second, 'awaiting_driver_confirmation', 'in_service');
   await user(2);
   await q(
-    `insert into reviews(request_id, reviewer_id, driver_id, provider_id, rating) values($1, $2, $3, $4, 4)`,
-    [second, id(2), id(1), id(2)],
+    `insert into reviews(request_id, reviewer_id, driver_id, rating) values($1, $2, $3, 4)`,
+    [second, id(2), id(1)],
   );
   await admin();
   ok((await q('select * from reviews where request_id=$1', [second])).length === 1, 'provider review stored');
 
-  // Limite conhecido: UNIQUE(request_id) ainda impede que os dois lados avaliem
-  // o mesmo atendimento. O prestador passa pela RLS e esbarra na constraint.
-  // Quando provider_id virar nullable e a unique virar (request_id, reviewer_id),
-  // este caso passa a ser aceito e a asserção abaixo precisa ser invertida.
+  // Os dois lados avaliam o mesmo atendimento. Antes a UNIQUE(request_id)
+  // impedia: quem avaliasse primeiro travava o outro para sempre.
+  await user(2);
+  await q(
+    `insert into reviews(request_id, reviewer_id, driver_id, rating) values($1, $2, $3, 3)`,
+    [request, id(2), id(1)],
+  );
+  await admin();
+  ok(
+    (await q('select * from reviews where request_id=$1', [request])).length === 2,
+    'both sides review the same request',
+  );
+
+  // O mesmo autor não avalia o mesmo atendimento duas vezes.
   await user(2);
   await assert.rejects(
-    q(`insert into reviews(request_id, reviewer_id, driver_id, provider_id, rating) values($1, $2, $3, $4, 4)`, [
+    q(`insert into reviews(request_id, reviewer_id, driver_id, rating) values($1, $2, $3, 1)`, [
       request,
       id(2),
       id(1),
-      id(2),
     ]),
     /duplicate key|unique/i,
-    'bloqueio atual é da constraint, não da política',
+    'uma avaliação por autor e atendimento',
+  );
+  checks++;
+
+  // Uma linha avalia exatamente um lado, nunca os dois. Roda como admin para
+  // isolar a constraint: sob RLS a linha já seria recusada pela política.
+  await admin();
+  await assert.rejects(
+    q(
+      `insert into reviews(request_id, reviewer_id, driver_id, provider_id, rating) values($1, $2, $3, $4, 5)`,
+      [second, id(1), id(1), id(2)],
+    ),
+    /reviews_single_target_check|violates check/i,
+    'provider_id e driver_id são mutuamente exclusivos',
+  );
+  checks++;
+  await assert.rejects(
+    q(`insert into reviews(request_id, reviewer_id, rating) values($1, $2, 5)`, [second, id(5)]),
+    /reviews_single_target_check|violates check/i,
+    'uma avaliação precisa ter um lado avaliado',
   );
   checks++;
 
@@ -113,6 +142,131 @@ module.exports = async db => {
     `insert into reviews(request_id, reviewer_id, provider_id, rating) values($1, $2, $3, 5)`,
     [early, id(1), id(2)],
   );
+
+  // Nenhuma função viva pode depender da unique antiga de reviews. As funções
+  // de liberação de pagamento gravavam a avaliação com
+  // `on conflict (request_id)`; sem a unique de coluna, isso falharia em
+  // runtime com "no unique or exclusion constraint matching".
+  await admin();
+  const staleConflict = await q(`
+    select p.proname from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosrc ilike '%on conflict (request_id)%'
+      and p.prosrc ilike '%reviews%'`);
+  ok(staleConflict.length === 0, `funções com ON CONFLICT obsoleto: ${staleConflict.map(r => r.proname)}`);
+
+  const fixedConflict = await q(`
+    select p.proname from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosrc ilike '%on conflict (request_id, reviewer_id)%'`);
+  ok(
+    fixedConflict.length >= 2,
+    `liberação de pagamento usa o novo alvo (${fixedConflict.length} função(ões))`,
+  );
+
+  // --- Disputa aberta pelos dois lados ---------------------------------
+
+  // Na chegada (fase diagnosis) o motorista contesta. Antes a RPC exigia a
+  // fase awaiting_driver_confirmation e este botão sempre falhava.
+  await user(1);
+  await q(`select open_service_dispute($1, $2)`, [early, 'O prestador não está no local informado.']);
+  await admin();
+  ok(
+    (await q(`select workflow_phase, status from service_requests where id=$1`, [early]))[0]
+      .workflow_phase === 'in_dispute',
+    'driver dispute at arrival moves to in_dispute',
+  );
+  ok(
+    (await q(`select opened_by from service_disputes where request_id=$1`, [early]))[0].opened_by === id(1),
+    'dispute records who opened it',
+  );
+
+  // O prestador abre disputa na conferência. Antes a RPC só aceitava o
+  // solicitante, então este botão também sempre falhava.
+  const providerDispute = id(303);
+  await openRequest(providerDispute, 'awaiting_driver_confirmation', 'in_service');
+  await user(2);
+  await q(`select open_service_dispute($1, $2)`, [
+    providerDispute,
+    'O motorista não confirma a conclusão do serviço.',
+  ]);
+  await admin();
+  ok(
+    (await q(`select opened_by from service_disputes where request_id=$1`, [providerDispute]))[0]
+      .opened_by === id(2),
+    'provider can open dispute',
+  );
+
+  // Quem não participa do atendimento continua fora.
+  const outsider = id(304);
+  await openRequest(outsider, 'diagnosis', 'provider_on_site');
+  await user(3);
+  await assert.rejects(
+    q(`select open_service_dispute($1, $2)`, [outsider, 'Quero abrir uma disputa qualquer.']),
+    /participantes/i,
+    'terceiro não abre disputa',
+  );
+  checks++;
+
+  // Fase anterior ao serviço não aceita disputa.
+  const tooEarly = id(305);
+  await openRequest(tooEarly, 'awaiting_dispatch_payment', 'offer_accepted');
+  await user(1);
+  await assert.rejects(
+    q(`select open_service_dispute($1, $2)`, [tooEarly, 'Ainda nem começou, mas quero disputar.']),
+    /não pode abrir disputa/i,
+    'disputa exige serviço em andamento',
+  );
+  checks++;
+
+  // Uma disputa por atendimento.
+  await user(2);
+  await assert.rejects(
+    q(`select open_service_dispute($1, $2)`, [providerDispute, 'Quero abrir uma segunda disputa.']),
+    /já possui uma disputa/i,
+    'uma disputa por atendimento',
+  );
+  checks++;
+
+  // --- Confirmação de chegada ------------------------------------------
+
+  const arrival = id(306);
+  await openRequest(arrival, 'diagnosis', 'provider_on_site');
+  await user(1);
+  await q(`select confirm_provider_arrival($1)`, [arrival]);
+  await q(`select confirm_provider_arrival($1)`, [arrival]);
+  await admin();
+  ok(
+    (
+      await q(
+        `select * from service_request_events where request_id=$1 and note='Motorista confirmou a chegada do prestador.'`,
+        [arrival],
+      )
+    ).length === 1,
+    'arrival confirmation is recorded once',
+  );
+
+  // Só o motorista do atendimento confirma.
+  await user(2);
+  await assert.rejects(
+    q(`select confirm_provider_arrival($1)`, [arrival]),
+    /motorista do atendimento/i,
+    'prestador não confirma a própria chegada',
+  );
+  checks++;
+
+  // Fora de provider_on_site, não há o que confirmar.
+  const notArrived = id(307);
+  await openRequest(notArrived, 'diagnosis', 'provider_en_route');
+  await user(1);
+  await assert.rejects(
+    q(`select confirm_provider_arrival($1)`, [notArrived]),
+    /prestador está no local/i,
+    'confirmação exige prestador no local',
+  );
+  checks++;
 
   await admin();
   console.log(`PASS security contracts (${checks} checks)`);
