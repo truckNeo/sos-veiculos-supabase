@@ -143,6 +143,29 @@ module.exports = async db => {
     [early, id(1), id(2)],
   );
 
+  // Nenhuma função viva pode depender da unique antiga de reviews. As funções
+  // de liberação de pagamento gravavam a avaliação com
+  // `on conflict (request_id)`; sem a unique de coluna, isso falharia em
+  // runtime com "no unique or exclusion constraint matching".
+  await admin();
+  const staleConflict = await q(`
+    select p.proname from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosrc ilike '%on conflict (request_id)%'
+      and p.prosrc ilike '%reviews%'`);
+  ok(staleConflict.length === 0, `funções com ON CONFLICT obsoleto: ${staleConflict.map(r => r.proname)}`);
+
+  const fixedConflict = await q(`
+    select p.proname from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosrc ilike '%on conflict (request_id, reviewer_id)%'`);
+  ok(
+    fixedConflict.length >= 2,
+    `liberação de pagamento usa o novo alvo (${fixedConflict.length} função(ões))`,
+  );
+
   // --- Disputa aberta pelos dois lados ---------------------------------
 
   // Na chegada (fase diagnosis) o motorista contesta. Antes a RPC exigia a

@@ -54,3 +54,51 @@ alter table public.reviews
 alter table public.reviews
   add constraint reviews_single_target_check
   check ((provider_id is not null) <> (driver_id is not null));
+
+-- Funções de liberação de pagamento gravam a avaliação do motorista com
+-- `on conflict (request_id) do nothing`. Sem a unique de coluna, esse ON
+-- CONFLICT não encontra índice correspondente e a liberação passaria a falhar
+-- em runtime com "no unique or exclusion constraint matching".
+--
+-- O alvo é reescrito a partir da definição viva, em vez de recriar as funções
+-- aqui: elas carregam regra financeira (repasse, comissão, métricas) que não
+-- deve ser duplicada nesta migration e sair de sincronia.
+do $$
+declare
+  fn record;
+  occurrences integer;
+  rewritten integer := 0;
+begin
+  for fn in
+    select p.oid, p.proname, pg_get_functiondef(p.oid) as definition, p.prosrc
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosrc ilike '%on conflict (request_id)%'
+      and p.prosrc ilike '%reviews%'
+  loop
+    -- Só reescreve quando há exatamente uma ocorrência, para não trocar por
+    -- engano um ON CONFLICT de outra tabela dentro da mesma função.
+    occurrences := (length(fn.prosrc) - length(replace(fn.prosrc, 'on conflict (request_id)', ''))) /
+                   length('on conflict (request_id)');
+    if occurrences <> 1 then
+      raise exception 'Função %: % ocorrências de "on conflict (request_id)"; revise manualmente.',
+        fn.proname, occurrences;
+    end if;
+    execute replace(fn.definition, 'on conflict (request_id)', 'on conflict (request_id, reviewer_id)');
+    rewritten := rewritten + 1;
+  end loop;
+
+  raise notice 'Alvo de ON CONFLICT ajustado em % função(ões).', rewritten;
+
+  if exists (
+    select 1 from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.prosrc ilike '%on conflict (request_id)%'
+      and p.prosrc ilike '%reviews%'
+  ) then
+    raise exception 'Ainda há função referenciando a unique antiga de reviews.';
+  end if;
+end;
+$$;
