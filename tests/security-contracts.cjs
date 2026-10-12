@@ -268,6 +268,56 @@ module.exports = async db => {
   );
   checks++;
 
+  // --- Pagamento confirmado antes do deslocamento ----------------------
+
+  const departure = id(310);
+  await admin();
+  await q(
+    `insert into service_requests
+       (id, requester_id, vehicle_id, problem_type, description, latitude, longitude,
+        status, workflow_phase, selected_provider_id)
+     values ($1, $2, $3, 'engine', 'Motor falhando', -23, -46, 'offer_accepted',
+             'awaiting_dispatch_payment', $4)`,
+    [departure, id(1), id(10), id(2)],
+  );
+  const offerId = (
+    await q(
+      `insert into provider_offers(request_id, provider_id, travel_fee_cents, status)
+       values($1, $2, 5000, 'accepted') returning id`,
+      [departure, id(2)],
+    )
+  )[0].id;
+
+  // Só o comprovante não libera mais: era exatamente o furo do fluxo.
+  await q(
+    `insert into request_attachments(request_id, uploaded_by, kind, storage_path)
+     values($1, $2, 'payment_receipt', 'recibos/x.jpg')`,
+    [departure, id(1)],
+  );
+  await user(2);
+  await assert.rejects(
+    q(`select transition_service_request_status($1, 'provider_en_route', null)`, [departure]),
+    /pagamento ainda não foi confirmado/i,
+    'comprovante sozinho não libera o deslocamento',
+  );
+  checks++;
+
+  // Com a cobrança paga pelo provedor, o deslocamento inicia.
+  await admin();
+  await q(
+    `insert into service_payment_charges(request_id, offer_id, provider_id, kind, amount_cents, status)
+     values($1, $2, $3, 'dispatch', 5000, 'paid')`,
+    [departure, offerId, id(2)],
+  );
+  await user(2);
+  await q(`select transition_service_request_status($1, 'provider_en_route', null)`, [departure]);
+  await admin();
+  ok(
+    (await q(`select status from service_requests where id=$1`, [departure]))[0].status ===
+      'provider_en_route',
+    'pagamento confirmado libera o deslocamento',
+  );
+
   await admin();
   console.log(`PASS security contracts (${checks} checks)`);
 };
