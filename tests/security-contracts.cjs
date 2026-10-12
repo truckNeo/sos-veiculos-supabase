@@ -78,30 +78,59 @@ module.exports = async db => {
   ok((await q('select * from reviews where request_id=$1', [request])).length === 1, 'driver review stored');
 
   // O prestador selecionado avalia o motorista num atendimento sem avaliação.
+  // provider_id fica nulo: quem está sendo avaliado é o motorista.
   const second = id(301);
   await openRequest(second, 'awaiting_driver_confirmation', 'in_service');
   await user(2);
   await q(
-    `insert into reviews(request_id, reviewer_id, driver_id, provider_id, rating) values($1, $2, $3, $4, 4)`,
-    [second, id(2), id(1), id(2)],
+    `insert into reviews(request_id, reviewer_id, driver_id, rating) values($1, $2, $3, 4)`,
+    [second, id(2), id(1)],
   );
   await admin();
   ok((await q('select * from reviews where request_id=$1', [second])).length === 1, 'provider review stored');
 
-  // Limite conhecido: UNIQUE(request_id) ainda impede que os dois lados avaliem
-  // o mesmo atendimento. O prestador passa pela RLS e esbarra na constraint.
-  // Quando provider_id virar nullable e a unique virar (request_id, reviewer_id),
-  // este caso passa a ser aceito e a asserção abaixo precisa ser invertida.
+  // Os dois lados avaliam o mesmo atendimento. Antes a UNIQUE(request_id)
+  // impedia: quem avaliasse primeiro travava o outro para sempre.
+  await user(2);
+  await q(
+    `insert into reviews(request_id, reviewer_id, driver_id, rating) values($1, $2, $3, 3)`,
+    [request, id(2), id(1)],
+  );
+  await admin();
+  ok(
+    (await q('select * from reviews where request_id=$1', [request])).length === 2,
+    'both sides review the same request',
+  );
+
+  // O mesmo autor não avalia o mesmo atendimento duas vezes.
   await user(2);
   await assert.rejects(
-    q(`insert into reviews(request_id, reviewer_id, driver_id, provider_id, rating) values($1, $2, $3, $4, 4)`, [
+    q(`insert into reviews(request_id, reviewer_id, driver_id, rating) values($1, $2, $3, 1)`, [
       request,
       id(2),
       id(1),
-      id(2),
     ]),
     /duplicate key|unique/i,
-    'bloqueio atual é da constraint, não da política',
+    'uma avaliação por autor e atendimento',
+  );
+  checks++;
+
+  // Uma linha avalia exatamente um lado, nunca os dois. Roda como admin para
+  // isolar a constraint: sob RLS a linha já seria recusada pela política.
+  await admin();
+  await assert.rejects(
+    q(
+      `insert into reviews(request_id, reviewer_id, driver_id, provider_id, rating) values($1, $2, $3, $4, 5)`,
+      [second, id(1), id(1), id(2)],
+    ),
+    /reviews_single_target_check|violates check/i,
+    'provider_id e driver_id são mutuamente exclusivos',
+  );
+  checks++;
+  await assert.rejects(
+    q(`insert into reviews(request_id, reviewer_id, rating) values($1, $2, 5)`, [second, id(5)]),
+    /reviews_single_target_check|violates check/i,
+    'uma avaliação precisa ter um lado avaliado',
   );
   checks++;
 
