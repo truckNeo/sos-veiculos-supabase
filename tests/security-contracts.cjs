@@ -143,6 +143,108 @@ module.exports = async db => {
     [early, id(1), id(2)],
   );
 
+  // --- Disputa aberta pelos dois lados ---------------------------------
+
+  // Na chegada (fase diagnosis) o motorista contesta. Antes a RPC exigia a
+  // fase awaiting_driver_confirmation e este botão sempre falhava.
+  await user(1);
+  await q(`select open_service_dispute($1, $2)`, [early, 'O prestador não está no local informado.']);
+  await admin();
+  ok(
+    (await q(`select workflow_phase, status from service_requests where id=$1`, [early]))[0]
+      .workflow_phase === 'in_dispute',
+    'driver dispute at arrival moves to in_dispute',
+  );
+  ok(
+    (await q(`select opened_by from service_disputes where request_id=$1`, [early]))[0].opened_by === id(1),
+    'dispute records who opened it',
+  );
+
+  // O prestador abre disputa na conferência. Antes a RPC só aceitava o
+  // solicitante, então este botão também sempre falhava.
+  const providerDispute = id(303);
+  await openRequest(providerDispute, 'awaiting_driver_confirmation', 'in_service');
+  await user(2);
+  await q(`select open_service_dispute($1, $2)`, [
+    providerDispute,
+    'O motorista não confirma a conclusão do serviço.',
+  ]);
+  await admin();
+  ok(
+    (await q(`select opened_by from service_disputes where request_id=$1`, [providerDispute]))[0]
+      .opened_by === id(2),
+    'provider can open dispute',
+  );
+
+  // Quem não participa do atendimento continua fora.
+  const outsider = id(304);
+  await openRequest(outsider, 'diagnosis', 'provider_on_site');
+  await user(3);
+  await assert.rejects(
+    q(`select open_service_dispute($1, $2)`, [outsider, 'Quero abrir uma disputa qualquer.']),
+    /participantes/i,
+    'terceiro não abre disputa',
+  );
+  checks++;
+
+  // Fase anterior ao serviço não aceita disputa.
+  const tooEarly = id(305);
+  await openRequest(tooEarly, 'awaiting_dispatch_payment', 'offer_accepted');
+  await user(1);
+  await assert.rejects(
+    q(`select open_service_dispute($1, $2)`, [tooEarly, 'Ainda nem começou, mas quero disputar.']),
+    /não pode abrir disputa/i,
+    'disputa exige serviço em andamento',
+  );
+  checks++;
+
+  // Uma disputa por atendimento.
+  await user(2);
+  await assert.rejects(
+    q(`select open_service_dispute($1, $2)`, [providerDispute, 'Quero abrir uma segunda disputa.']),
+    /já possui uma disputa/i,
+    'uma disputa por atendimento',
+  );
+  checks++;
+
+  // --- Confirmação de chegada ------------------------------------------
+
+  const arrival = id(306);
+  await openRequest(arrival, 'diagnosis', 'provider_on_site');
+  await user(1);
+  await q(`select confirm_provider_arrival($1)`, [arrival]);
+  await q(`select confirm_provider_arrival($1)`, [arrival]);
+  await admin();
+  ok(
+    (
+      await q(
+        `select * from service_request_events where request_id=$1 and note='Motorista confirmou a chegada do prestador.'`,
+        [arrival],
+      )
+    ).length === 1,
+    'arrival confirmation is recorded once',
+  );
+
+  // Só o motorista do atendimento confirma.
+  await user(2);
+  await assert.rejects(
+    q(`select confirm_provider_arrival($1)`, [arrival]),
+    /motorista do atendimento/i,
+    'prestador não confirma a própria chegada',
+  );
+  checks++;
+
+  // Fora de provider_on_site, não há o que confirmar.
+  const notArrived = id(307);
+  await openRequest(notArrived, 'diagnosis', 'provider_en_route');
+  await user(1);
+  await assert.rejects(
+    q(`select confirm_provider_arrival($1)`, [notArrived]),
+    /prestador está no local/i,
+    'confirmação exige prestador no local',
+  );
+  checks++;
+
   await admin();
   console.log(`PASS security contracts (${checks} checks)`);
 };
