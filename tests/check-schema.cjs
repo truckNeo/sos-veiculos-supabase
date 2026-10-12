@@ -27,5 +27,5 @@ for(const name of [...new Set([...fs.readdirSync(root).filter(n=>n.endsWith('.sq
 console.log('PASS all migration DDL (spatial functions stubbed)');
 if(process.env.SOS_SCHEMA_OUTPUT){const sql=fs.readFileSync(path.join(__dirname,'inspect-favorites.sql'),'utf8');fs.writeFileSync(process.env.SOS_SCHEMA_OUTPUT,JSON.stringify((await db.query(sql)).rows));}
 if(process.env.SOS_SCHEMA_COLUMNS){fs.writeFileSync(process.env.SOS_SCHEMA_COLUMNS,JSON.stringify((await db.query(fs.readFileSync(path.join(__dirname,'inspect-remote.sql'),'utf8'))).rows));}
-try {await require('./product-contracts.cjs')(db);} finally {await db.close();}
+try {await require('./product-contracts.cjs')(db);await require('./security-contracts.cjs')(db);} finally {await db.close();}
 })().catch(e=>{console.error(e);process.exitCode=1});
