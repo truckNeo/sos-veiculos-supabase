@@ -66,12 +66,14 @@ export default {
         break;
       }
       case 'TRANSFER_DONE': {
+        // Registra o id para conciliação, sem concluir o ledger antes da avaliação.
         // Cobre tanto o repasse (conta mestre -> subconta) quanto o saque
         // (subconta -> banco do prestador) — cada tabela só casa um dos dois.
         if (body.transfer?.id) {
           await ctx.supabaseAdmin.from('service_provider_transfers')
-            .update({status: 'completed', completed_at: new Date().toISOString()})
-            .eq('asaas_transfer_id', body.transfer.id).eq('status', 'processing');
+            .update({asaas_transfer_id: body.transfer.id})
+            .eq('id', body.transfer.externalReference ?? '00000000-0000-0000-0000-000000000000')
+            .in('status', ['processing', 'manual_review']);
           await ctx.supabaseAdmin.from('provider_asaas_withdrawals')
             .update({status: 'paid'})
             .eq('asaas_transfer_id', body.transfer.id).eq('status', 'requested');
