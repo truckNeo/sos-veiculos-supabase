@@ -88,7 +88,9 @@ await user(1);
 const another=(await q(`select create_service_appointment_v2($1,$2,now()+interval '2 days',60,'Nova revisão',null) id`,[id(10),id(2)]))[0].id;
 await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[another]);await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[another]);await user(1);
 const second=(await q(`select convert_service_appointment($1,'engine','Nova revisão',-23,-46,'Oficina confirmada') id`,[another]))[0].id;
-await denied(`select * from open_service_request($1,'engine','Outro problema',-23,-46,'Oficina')`,[id(10)],/agendado em aberto/);
+// A regra de "um atendimento ativo por vez" passou a barrar antes do gatilho
+// de veículo agendado: continua recusado, com mensagem mais clara.
+await denied(`select * from open_service_request($1,'engine','Outro problema',-23,-46,'Oficina')`,[id(10)],/já tem um atendimento em andamento|agendado em aberto/);
 await user(2);const dispatch=(await q('select id from service_request_dispatches where request_id=$1',[second]))[0].id;await q('select dismiss_service_request_dispatch($1)',[dispatch]);
 await admin();ok((await q('select status from service_appointments where id=$1',[another]))[0].status==='cancelled','declined dispatch cancels appointment');
 await user(1);const standalone=(await q(`select * from open_service_request($1,'engine','Chamado avulso',-23,-46,'Oficina')`,[id(10)]))[0].id;

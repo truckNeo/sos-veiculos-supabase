@@ -363,6 +363,41 @@ module.exports = async db => {
     'outbox fechado para authenticated',
   );
   checks++;
+  // --- Um chamado ativo por vez -----------------------------------------
+
+  // id(5) ainda não tem atendimento; abre o primeiro e tenta um segundo.
+  await user(5);
+  await q(
+    `select open_service_request($1, 'engine', 'Barulho no motor', -23, -46, null)`,
+    [id(11)],
+  );
+  await assert.rejects(
+    q(`select open_service_request($1, 'engine', 'Outro problema qualquer', -23, -46, null)`, [
+      id(11),
+    ]),
+    /já tem um atendimento em andamento/i,
+    'segundo chamado ativo é recusado',
+  );
+  checks++;
+
+  // Encerrado o primeiro, abrir de novo volta a funcionar.
+  await admin();
+  await q(
+    `update service_requests set workflow_phase='completed', status='completed'
+     where requester_id=$1`,
+    [id(5)],
+  );
+  await user(5);
+  await q(
+    `select open_service_request($1, 'engine', 'Novo problema no motor', -23, -46, null)`,
+    [id(11)],
+  );
+  await admin();
+  ok(
+    (await q('select * from service_requests where requester_id=$1', [id(5)])).length === 2,
+    'novo chamado permitido após encerrar',
+  );
+
   // --- Exclusão de conta ------------------------------------------------
 
   // Com atendimento em andamento, a exclusão é recusada: encerrar no meio
