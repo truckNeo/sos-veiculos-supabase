@@ -363,6 +363,37 @@ module.exports = async db => {
     'outbox fechado para authenticated',
   );
   checks++;
+  // --- Exclusão de conta ------------------------------------------------
+
+  // Com atendimento em andamento, a exclusão é recusada: encerrar no meio
+  // deixaria a outra parte sem contato.
+  await user(1);
+  await assert.rejects(
+    q('select request_account_deletion()'),
+    /atendimentos em andamento/i,
+    'exclusão recusada com atendimento aberto',
+  );
+  checks++;
+
+  // Encerrados os atendimentos, os dados pessoais somem.
+  await admin();
+  await q(
+    `update service_requests set workflow_phase='cancelled', status='cancelled'
+     where requester_id=$1 and workflow_phase not in ('completed','cancelled')`,
+    [id(1)],
+  );
+  await user(1);
+  await q('select request_account_deletion()');
+  await admin();
+  const removed = (await q('select * from profiles where id=$1', [id(1)]))[0];
+  ok(removed.full_name === 'Conta removida', 'nome anonimizado');
+  ok(removed.document_last4 === '0000', 'documento anonimizado');
+  ok(!removed.document_hash.includes('fixture-1'), 'hash do documento substituído');
+  ok(
+    (await q('select * from account_deletion_requests where user_id=$1', [id(1)])).length === 1,
+    'pedido de exclusão registrado',
+  );
+
   await admin();
 
   console.log(`PASS security contracts (${checks} checks)`);
