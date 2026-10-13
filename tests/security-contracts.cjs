@@ -268,6 +268,168 @@ module.exports = async db => {
   );
   checks++;
 
+  // --- Pagamento confirmado antes do deslocamento ----------------------
+
+  const departure = id(310);
   await admin();
+  await q(
+    `insert into service_requests
+       (id, requester_id, vehicle_id, problem_type, description, latitude, longitude,
+        status, workflow_phase, selected_provider_id)
+     values ($1, $2, $3, 'engine', 'Motor falhando', -23, -46, 'offer_accepted',
+             'awaiting_dispatch_payment', $4)`,
+    [departure, id(1), id(10), id(2)],
+  );
+  const offerId = (
+    await q(
+      `insert into provider_offers(request_id, provider_id, travel_fee_cents, status)
+       values($1, $2, 5000, 'accepted') returning id`,
+      [departure, id(2)],
+    )
+  )[0].id;
+
+  // Só o comprovante não libera mais: era exatamente o furo do fluxo.
+  await q(
+    `insert into request_attachments(request_id, uploaded_by, kind, storage_path)
+     values($1, $2, 'payment_receipt', 'recibos/x.jpg')`,
+    [departure, id(1)],
+  );
+  await user(2);
+  await assert.rejects(
+    q(`select transition_service_request_status($1, 'provider_en_route', null)`, [departure]),
+    /pagamento ainda não foi confirmado/i,
+    'comprovante sozinho não libera o deslocamento',
+  );
+  checks++;
+
+  // Com a cobrança paga pelo provedor, o deslocamento inicia.
+  await admin();
+  await q(
+    `insert into service_payment_charges(request_id, offer_id, provider_id, kind, amount_cents, status)
+     values($1, $2, $3, 'dispatch', 5000, 'paid')`,
+    [departure, offerId, id(2)],
+  );
+  await user(2);
+  await q(`select transition_service_request_status($1, 'provider_en_route', null)`, [departure]);
+  await admin();
+  ok(
+    (await q(`select status from service_requests where id=$1`, [departure]))[0].status ===
+      'provider_en_route',
+    'pagamento confirmado libera o deslocamento',
+  );
+
+  // --- Fila de push do motorista ---------------------------------------
+
+  await admin();
+  const pushed = async (requestId, kind) =>
+    (await q(`select * from driver_event_push_outbox where request_id=$1 and kind=$2`, [requestId, kind]))
+      .length;
+
+  // A proposta aceita criada em openRequest já deve ter enfileirado aviso.
+  ok((await pushed(departure, 'offer_received')) === 1, 'proposta enfileira push ao motorista');
+
+  // A transição para deslocamento também enfileirou, via gatilho de status.
+  ok((await pushed(departure, 'provider_en_route')) === 1, 'deslocamento enfileira push');
+
+  // Transição repetida não duplica o aviso.
+  await q(`update service_requests set status='provider_on_site' where id=$1`, [departure]);
+  await q(`update service_requests set status='provider_en_route' where id=$1`, [departure]);
+  await q(`update service_requests set status='provider_on_site' where id=$1`, [departure]);
+  ok((await pushed(departure, 'provider_on_site')) === 1, 'evento repetido não duplica push');
+
+  // A conferência avisa o motorista.
+  await q(
+    `update service_requests set workflow_phase='awaiting_driver_confirmation' where id=$1`,
+    [departure],
+  );
+  ok(
+    (await pushed(departure, 'awaiting_driver_confirmation')) === 1,
+    'conferência enfileira push',
+  );
+
+  // Disputa avisa os dois lados.
+  ok(
+    (await q(`select * from driver_event_push_outbox where request_id=$1 and kind='dispute_opened'`, [early]))
+      .length === 2,
+    'disputa avisa motorista e prestador',
+  );
+
+  // A fila é inacessível para quem não é service role: o grant foi revogado,
+  // então nem chega a ser uma questão de RLS.
+  await user(1);
+  await assert.rejects(
+    q('select * from driver_event_push_outbox'),
+    /permission denied/i,
+    'outbox fechado para authenticated',
+  );
+  checks++;
+  // --- Um chamado ativo por vez -----------------------------------------
+
+  // id(5) ainda não tem atendimento; abre o primeiro e tenta um segundo.
+  await user(5);
+  await q(
+    `select open_service_request($1, 'engine', 'Barulho no motor', -23, -46, null)`,
+    [id(11)],
+  );
+  await assert.rejects(
+    q(`select open_service_request($1, 'engine', 'Outro problema qualquer', -23, -46, null)`, [
+      id(11),
+    ]),
+    /já tem um atendimento em andamento/i,
+    'segundo chamado ativo é recusado',
+  );
+  checks++;
+
+  // Encerrado o primeiro, abrir de novo volta a funcionar.
+  await admin();
+  await q(
+    `update service_requests set workflow_phase='completed', status='completed'
+     where requester_id=$1`,
+    [id(5)],
+  );
+  await user(5);
+  await q(
+    `select open_service_request($1, 'engine', 'Novo problema no motor', -23, -46, null)`,
+    [id(11)],
+  );
+  await admin();
+  ok(
+    (await q('select * from service_requests where requester_id=$1', [id(5)])).length === 2,
+    'novo chamado permitido após encerrar',
+  );
+
+  // --- Exclusão de conta ------------------------------------------------
+
+  // Com atendimento em andamento, a exclusão é recusada: encerrar no meio
+  // deixaria a outra parte sem contato.
+  await user(1);
+  await assert.rejects(
+    q('select request_account_deletion()'),
+    /atendimentos em andamento/i,
+    'exclusão recusada com atendimento aberto',
+  );
+  checks++;
+
+  // Encerrados os atendimentos, os dados pessoais somem.
+  await admin();
+  await q(
+    `update service_requests set workflow_phase='cancelled', status='cancelled'
+     where requester_id=$1 and workflow_phase not in ('completed','cancelled')`,
+    [id(1)],
+  );
+  await user(1);
+  await q('select request_account_deletion()');
+  await admin();
+  const removed = (await q('select * from profiles where id=$1', [id(1)]))[0];
+  ok(removed.full_name === 'Conta removida', 'nome anonimizado');
+  ok(removed.document_last4 === '0000', 'documento anonimizado');
+  ok(!removed.document_hash.includes('fixture-1'), 'hash do documento substituído');
+  ok(
+    (await q('select * from account_deletion_requests where user_id=$1', [id(1)])).length === 1,
+    'pedido de exclusão registrado',
+  );
+
+  await admin();
+
   console.log(`PASS security contracts (${checks} checks)`);
 };
