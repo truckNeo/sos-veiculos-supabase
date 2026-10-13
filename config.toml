@@ -7,6 +7,9 @@ project_id = "sos-veiculo"
 [functions.process-product-notifications]
 verify_jwt = false
 
+[functions.drain-push-outboxes]
+verify_jwt = false
+
 [functions.register-account]
 verify_jwt = false
 
