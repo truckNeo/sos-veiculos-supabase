@@ -1,4 +1,5 @@
-import {withSupabase} from 'npm:@supabase/server';
+import {withSupabase} from 'npm:@supabase/server@1.4.1';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 
 import {hmacDocument, normalizeDigits} from '../_shared/auth.ts';
 import {asaasFetch, isAsaasSandbox, parseAsaasError} from '../_shared/asaas.ts';
@@ -8,7 +9,7 @@ type AsaasPayment = {id?: string; invoiceUrl?: string; externalReference?: strin
 type AsaasPixQrCode = {payload?: string; encodedImage?: string; expirationDate?: string};
 
 export default {
-  fetch: withSupabase({auth: 'user'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'user'}, async (request, ctx) => {
     if (request.method !== 'POST') return Response.json({message: 'Método inválido.'}, {status: 405});
     const {chargeId, payerDocument} = await request.json() as {chargeId?: string; payerDocument?: string};
     if (!chargeId) return Response.json({message: 'Cobrança inválida.'}, {status: 400});

@@ -1,4 +1,5 @@
-import {withSupabase} from 'npm:@supabase/server';
+import {withSupabase} from 'npm:@supabase/server@1.4.1';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 import {asaasFetch} from '../_shared/asaas.ts';
 
 const secureEqual = (a: string, b: string) => {
@@ -10,7 +11,7 @@ const secureEqual = (a: string, b: string) => {
 const refuse = (refuseReason: string) => Response.json({status: 'REFUSED', refuseReason});
 
 export default {
-  fetch: withSupabase({auth: 'none'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'none'}, async (request, ctx) => {
     const token = (Deno.env.get('ASAAS_OPERATION_WEBHOOK_TOKEN') ?? '').trim();
     if (!token) return Response.json({status: 'REFUSED', refuseReason: 'Webhook não configurado.'}, {status: 503});
     if (!secureEqual((request.headers.get('asaas-access-token') ?? '').trim(), token)) return Response.json({status: 'REFUSED', refuseReason: 'Token inválido.'}, {status: 401});

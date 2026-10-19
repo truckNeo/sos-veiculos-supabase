@@ -1,5 +1,5 @@
 import {withSupabase} from 'npm:@supabase/server@1.4.1';
-import type {AsaasWebhookDatabase} from '../_shared/asaas-webhook-database.ts';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 
 /**
  * Webhook de NOTIFICAÇÃO de eventos do Asaas (Integrações → Webhooks).
@@ -51,7 +51,7 @@ type AsaasEvent = {
 };
 
 export default {
-  fetch: withSupabase<AsaasWebhookDatabase>({auth: 'none'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'none'}, async (request, ctx) => {
     const expected = (Deno.env.get('ASAAS_WEBHOOK_TOKEN') ?? '').trim();
     if (!expected) {
       console.error('asaas-webhook: ASAAS_WEBHOOK_TOKEN não configurado.');
