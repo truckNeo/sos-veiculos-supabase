@@ -162,3 +162,72 @@ test('falha de QR depois da emissão é recuperada sem duplicar cobrança',async
   assert.equal((await handler(pixRequest())).status,200);
   assert.equal(posts,1);assert.equal(f.rpcCalls.length,1);
 });
+
+// --- asaas-webhook: o evento não pode sumir numa falha de banco ---
+const hook=(body)=>new Request('https://local.test',{method:'POST',headers:{'content-type':'application/json','asaas-access-token':'token-1'},body:JSON.stringify(body)});
+function webhookFixture(state={}){
+  const calls=[];const marks=[];
+  const s={recordError:null,alreadyProcessed:false,rpcErrors:{},updateErrors:{},...state};
+  const chain=(table)=>({update(){return this;},eq(){return this;},in(){return this;},
+    then(resolve){calls.push(table);resolve({error:s.updateErrors[table]??null});}});
+  const ctx={supabaseAdmin:{
+    rpc:async(name,args)=>{
+      calls.push(name);
+      if(name==='record_asaas_webhook_event')
+        return s.recordError?{data:null,error:{message:s.recordError}}
+          :{data:[{event_id:'evt-row-1',already_processed:s.alreadyProcessed}],error:null};
+      if(name.startsWith('mark_asaas_webhook_event')) marks.push({name,args});
+      return {error:s.rpcErrors[name]??null};
+    },
+    from:(table)=>chain(table)}};
+  return {ctx,calls,marks};
+}
+const webhook=(f)=>load('asaas-webhook',f.ctx,async()=>{},true,{ASAAS_WEBHOOK_TOKEN:'token-1'});
+const payment=(id='pay-1')=>({id:'evt-1',event:'PAYMENT_RECEIVED',payment:{id}});
+
+test('webhook recusa token invalido sem registrar o evento',async()=>{
+  const f=webhookFixture();
+  const response=await webhook(f)(new Request('https://local.test',{method:'POST',headers:{'content-type':'application/json','asaas-access-token':'errado'},body:JSON.stringify(payment())}));
+  assert.equal(response.status,401);
+  assert.equal(f.calls.length,0);
+});
+test('evento que nao pode ser registrado pede reentrega e nao processa nada',async()=>{
+  const f=webhookFixture({recordError:'banco indisponível'});
+  const response=await webhook(f)(hook(payment()));
+  assert.equal(response.status,503);
+  assert.ok(!f.calls.includes('confirm_asaas_charge_payment'));
+});
+test('falha na confirmacao devolve erro e guarda o motivo no evento',async()=>{
+  const f=webhookFixture({rpcErrors:{confirm_asaas_charge_payment:{message:'deadlock detectado'}}});
+  const response=await webhook(f)(hook(payment()));
+  // Antes isto respondia 200: o Asaas dava por entregue e o pagamento ficava sem conciliacao.
+  assert.equal(response.status,500);
+  const failed=f.marks.find(m=>m.name==='mark_asaas_webhook_event_failed');
+  assert.ok(failed,'o evento precisa ser marcado como falho');
+  assert.match(failed.args.p_error,/deadlock detectado/);
+  assert.ok(!f.marks.some(m=>m.name==='mark_asaas_webhook_event_processed'));
+});
+test('reentrega de evento ja processado nao repete o efeito financeiro',async()=>{
+  const f=webhookFixture({alreadyProcessed:true});
+  const response=await webhook(f)(hook(payment()));
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).duplicate,true);
+  assert.ok(!f.calls.includes('confirm_asaas_charge_payment'));
+});
+test('falha no saque do TRANSFER_DONE nao passa mais em silencio',async()=>{
+  const f=webhookFixture({updateErrors:{provider_asaas_withdrawals:{message:'coluna ausente'}}});
+  const response=await webhook(f)(hook({id:'evt-2',event:'TRANSFER_DONE',transfer:{id:'tr-1',externalReference:'op-1'}}));
+  assert.equal(response.status,500);
+  assert.match(f.marks.find(m=>m.name==='mark_asaas_webhook_event_failed').args.p_error,/provider_asaas_withdrawals/);
+});
+test('evento processado com sucesso recebe baixa e 200',async()=>{
+  const f=webhookFixture();
+  const response=await webhook(f)(hook(payment()));
+  assert.equal(response.status,200);
+  assert.ok(f.calls.includes('confirm_asaas_charge_payment'));
+  assert.equal(f.marks.filter(m=>m.name==='mark_asaas_webhook_event_processed').length,1);
+});
+test('baixa que falha pede reentrega em vez de mentir sobre o processamento',async()=>{
+  const f=webhookFixture({rpcErrors:{mark_asaas_webhook_event_processed:{message:'timeout'}}});
+  assert.equal((await webhook(f)(hook(payment()))).status,500);
+});

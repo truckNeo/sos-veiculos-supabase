@@ -82,5 +82,24 @@ module.exports = async db => {
   const entry=(await q('select * from provider_wallet_entries where charge_id=$1',[charge2]))[0];
   ok(entry.status==='available' && entry.provider_net_cents===4501 && entry.platform_fee_cents===500,'confirmed transfer updates ledger with commission');
   ok((await q('select asaas_transfer_id from service_provider_transfers where request_id=$1',[request2]))[0].asaas_transfer_id==='transfer_contract','gateway transfer recorded');
+  // Inbox do webhook: o evento precisa sobreviver a uma falha de
+  // processamento, e a reentrega não pode repetir o efeito financeiro.
+  await admin(); await db.exec('set role service_role');
+  const first=(await q(`select * from record_asaas_webhook_event('evt_contract','PAYMENT_RECEIVED','{"id":"evt_contract"}'::jsonb)`))[0];
+  ok(first.event_id && first.already_processed===false,'first delivery records the event as unprocessed');
+  await q('select mark_asaas_webhook_event_failed($1,$2)',[first.event_id,'banco indisponível']);
+  const failed=(await q('select * from asaas_webhook_events where id=$1',[first.event_id]))[0];
+  ok(failed.status==='failed' && failed.last_error==='banco indisponível','failure keeps the event with its reason');
+  const redelivery=(await q(`select * from record_asaas_webhook_event('evt_contract','PAYMENT_RECEIVED','{"id":"evt_contract"}'::jsonb)`))[0];
+  ok(redelivery.event_id===first.event_id && redelivery.already_processed===false,'redelivery reuses the row and stays processable');
+  ok((await q('select attempts from asaas_webhook_events where id=$1',[first.event_id]))[0].attempts===2,'redelivery counts the second attempt');
+  await q('select mark_asaas_webhook_event_processed($1)',[first.event_id]);
+  const done=(await q('select * from asaas_webhook_events where id=$1',[first.event_id]))[0];
+  ok(done.status==='processed' && done.processed_at && done.last_error===null,'processing clears the previous error');
+  const afterDone=(await q(`select * from record_asaas_webhook_event('evt_contract','PAYMENT_RECEIVED','{"id":"evt_contract"}'::jsonb)`))[0];
+  ok(afterDone.already_processed===true,'redelivery of a processed event is reported as duplicate');
+  await user(1);
+  await assert.rejects(q('select * from asaas_webhook_events'),/permission denied/); checks++;
+  await admin();
   console.log(`PASS Asaas contracts (${checks} checks)`);
 };
