@@ -1,4 +1,5 @@
-import {withSupabase} from 'npm:@supabase/server';
+import {withSupabase} from 'npm:@supabase/server@1.4.1';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 
 import {asaasFetch, decryptProviderApiKey, parseAsaasError} from '../_shared/asaas.ts';
 
@@ -10,7 +11,7 @@ import {asaasFetch, decryptProviderApiKey, parseAsaasError} from '../_shared/asa
 type AsaasCommercialInfo = {name?: string; cpfCnpj?: string};
 
 export default {
-  fetch: withSupabase({auth: 'user'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'user'}, async (request, ctx) => {
     const {amountCents} = await request.json() as {amountCents?: number};
     if (!Number.isInteger(amountCents) || !amountCents || amountCents < 500) {
       return Response.json({message: 'O saque mínimo é R$ 5,00.'}, {status: 400});
@@ -49,7 +50,14 @@ export default {
         return Response.json({message: await parseAsaasError(response) || 'O saque está em revisão.'}, {status: 502});
       }
       const result = await response.json() as {id?: string};
-      await ctx.supabaseAdmin.from('provider_asaas_withdrawals').update({asaas_transfer_id: result.id ?? null, status: 'requested'}).eq('id', w.withdrawal_id);
+      // Sem id não há como conciliar um saque que já saiu da subconta. Marcar
+      // 'requested' com asaas_transfer_id nulo esconderia isso; o saque vai
+      // para revisão, como no caminho de erro.
+      if (!result.id) {
+        await ctx.supabaseAdmin.from('provider_asaas_withdrawals').update({status: 'manual_review'}).eq('id', w.withdrawal_id);
+        return Response.json({message: 'O saque foi aceito sem identificação e está em revisão financeira.'}, {status: 502});
+      }
+      await ctx.supabaseAdmin.from('provider_asaas_withdrawals').update({asaas_transfer_id: result.id, status: 'requested'}).eq('id', w.withdrawal_id);
       return Response.json({requested: true});
     } catch (err) {
       console.error('request-asaas-withdrawal:', err);

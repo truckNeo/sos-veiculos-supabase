@@ -1,4 +1,5 @@
-import {withSupabase} from 'npm:@supabase/server';
+import {withSupabase} from 'npm:@supabase/server@1.4.1';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 
 import {asaasFetch, isAsaasSandbox} from '../_shared/asaas.ts';
 
@@ -10,7 +11,7 @@ import {asaasFetch, isAsaasSandbox} from '../_shared/asaas.ts';
 // endpoint não existe no Asaas e a função recusa de propósito.
 
 export default {
-  fetch: withSupabase({auth: 'user'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'user'}, async (request, ctx) => {
     if (!isAsaasSandbox()) {
       return Response.json({message: 'Simulação de pagamento disponível apenas no ambiente sandbox.'}, {status: 404});
     }
