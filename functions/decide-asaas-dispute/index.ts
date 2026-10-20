@@ -1,4 +1,5 @@
-import {withSupabase} from 'npm:@supabase/server';
+import {withSupabase} from 'npm:@supabase/server@1.4.1';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 import {asaasFetch, isAsaasSandbox} from '../_shared/asaas.ts';
 
 type Operation = {
@@ -9,12 +10,12 @@ type Operation = {
 type GatewayResult = {id?: string; status?: string; value?: number; walletId?: string};
 
 export default {
-  fetch: withSupabase({auth: 'user'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'user'}, async (request, ctx) => {
     if (request.method !== 'POST') return Response.json({message: 'Método inválido.'}, {status: 405});
     let body: {requestId?: string; decision?: string; note?: string};
     try { body = await request.json(); } catch { return Response.json({message: 'Dados inválidos.'}, {status: 400}); }
     const {requestId, decision, note} = body;
-    if (!requestId || !['driver_refunded', 'provider_released', 'cancelled'].includes(decision ?? '') || typeof note !== 'string' || note.trim().length < 10 || note.trim().length > 2000) {
+    if (!requestId || typeof decision !== 'string' || !['driver_refunded', 'provider_released', 'cancelled'].includes(decision) || typeof note !== 'string' || note.trim().length < 10 || note.trim().length > 2000) {
       return Response.json({message: 'Informe a decisão e uma justificativa entre 10 e 2000 caracteres.'}, {status: 400});
     }
     // A autorização de administrador é validada no banco antes de qualquer acesso financeiro.

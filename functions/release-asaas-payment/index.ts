@@ -1,10 +1,11 @@
-import {withSupabase} from 'npm:@supabase/server';
+import {withSupabase} from 'npm:@supabase/server@1.4.1';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 import {asaasFetch, isAsaasSandbox} from '../_shared/asaas.ts';
 
 type Transfer = {id: string; status: string; asaas_transfer_id: string | null};
 
 export default {
-  fetch: withSupabase({auth: 'user'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'user'}, async (request, ctx) => {
     if (request.method !== 'POST') return Response.json({message: 'Método inválido.'}, {status: 405});
     let body: {requestId?: string; rating?: number; comment?: string | null};
     try { body = await request.json(); } catch { return Response.json({message: 'Dados inválidos.'}, {status: 400}); }
@@ -46,8 +47,14 @@ export default {
       if (gateway.status !== 'DONE') {
         return Response.json({message: 'O repasse foi solicitado ao Asaas e aguarda confirmação. Tente confirmar novamente para atualizar o resultado.'}, {status: 409});
       }
+      // Ao reconsultar um repasse já enviado, o id do gateway não era
+      // conferido: uma resposta sem id concluiria a liberação sem referência
+      // para conciliar. O id guardado é a mesma transferência, então serve de
+      // fallback; sem nenhum dos dois, a liberação não pode ser concluída.
+      const confirmedTransferId = gateway.id ?? transfer.asaas_transfer_id;
+      if (!confirmedTransferId) throw new Error('Repasse confirmado sem identificador.');
       const {error: completeError} = await ctx.supabaseAdmin.rpc('complete_asaas_payment_release_with_review', {
-        p_transfer_id: release.transfer_id, p_asaas_transfer_id: gateway.id, p_rating: rating, p_comment: comment?.trim() || null,
+        p_transfer_id: release.transfer_id, p_asaas_transfer_id: confirmedTransferId, p_rating: rating, p_comment: comment?.trim() || null,
       });
       if (completeError) return Response.json({message: 'O repasse foi confirmado, mas precisa de conciliação no sistema.'}, {status: 500});
       return Response.json({released: true});
