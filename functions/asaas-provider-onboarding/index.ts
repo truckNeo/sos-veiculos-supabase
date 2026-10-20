@@ -1,4 +1,5 @@
-import {withSupabase} from 'npm:@supabase/server';
+import {withSupabase} from 'npm:@supabase/server@1.4.1';
+import type {AsaasDatabase} from '../_shared/asaas-database.ts';
 
 import {hmacDocument, normalizeDigits} from '../_shared/auth.ts';
 import {asaasFetch, encryptProviderApiKey, parseAsaasError} from '../_shared/asaas.ts';
@@ -26,7 +27,7 @@ type AsaasAccount = {id?: string; walletId?: string; apiKey?: string; accessToke
 type AsaasDocuments = {data?: Array<{onboardingUrl?: string | null}>};
 
 export default {
-  fetch: withSupabase({auth: 'user'}, async (request, ctx) => {
+  fetch: withSupabase<AsaasDatabase>({auth: 'user'}, async (request, ctx) => {
     try {
       const input = await request.json() as OnboardingInput;
       const cnpj = normalizeDigits(input.cnpj ?? '');
@@ -40,12 +41,18 @@ export default {
         return Response.json({message: 'Preencha o CNPJ, responsável e os dados bancários.'}, {status: 400});
       }
 
+      // O contexto expõe userClaims; `ctx.user` nunca existiu em nenhuma versão
+      // do @supabase/server, então ler `.id` dele lançava TypeError e o catch
+      // abaixo devolvia 503 — o onboarding falhava sempre.
+      const providerId = ctx.userClaims?.id;
+      if (!providerId) return Response.json({message: 'Sessão inválida.'}, {status: 401});
+
       const [{data: profile}, {data: business}, {data: existing}] = await Promise.all([
         ctx.supabase.from('profiles').select('document_hash, phone').maybeSingle(),
         ctx.supabase.from('provider_profiles').select(
           'business_name, legal_name, postal_code, address_street, address_number, address_complement, address_neighborhood, address_city, address_state',
         ).maybeSingle(),
-        ctx.supabaseAdmin.from('provider_asaas_accounts').select('asaas_account_id, status').eq('provider_id', ctx.user.id).maybeSingle(),
+        ctx.supabaseAdmin.from('provider_asaas_accounts').select('asaas_account_id, status').eq('provider_id', providerId).maybeSingle(),
       ]);
       if (!profile || !business || (await hmacDocument(cnpj)) !== profile.document_hash) {
         return Response.json({message: 'O CNPJ deve ser o mesmo utilizado no cadastro do estabelecimento.'}, {status: 400});
@@ -104,7 +111,7 @@ export default {
 
       const {ciphertext, iv} = await encryptProviderApiKey(apiKey);
       const {error} = await ctx.supabaseAdmin.from('provider_asaas_accounts').upsert({
-        provider_id: ctx.user.id,
+        provider_id: providerId,
         asaas_account_id: account.id,
         wallet_id: account.walletId,
         api_key_ciphertext: ciphertext,

@@ -62,7 +62,17 @@ export type AsaasDatabase = {
         wallet_id: string | null;
         status: string;
         verified_at: string | null;
+        verification_requested_at: string | null;
         rejection_reason: string | null;
+        onboarding_url: string | null;
+        // A apiKey da subconta fica cifrada aqui; só o saque a decifra.
+        api_key_ciphertext: string | null;
+        api_key_iv: string | null;
+        bank_code: string | null;
+        bank_agency: string | null;
+        bank_account: string | null;
+        bank_account_digit: string | null;
+        bank_account_type: string | null;
       }>;
       provider_asaas_withdrawals: Table<{
         id: string;
@@ -75,6 +85,19 @@ export type AsaasDatabase = {
         document_hash: string | null;
         phone: string | null;
         asaas_customer_id: string | null;
+      }>;
+      /** Só o que o onboarding da subconta envia ao Asaas. */
+      provider_profiles: Table<{
+        provider_id: string;
+        business_name: string;
+        legal_name: string | null;
+        postal_code: string | null;
+        address_street: string | null;
+        address_number: string | null;
+        address_complement: string | null;
+        address_neighborhood: string | null;
+        address_city: string | null;
+        address_state: string | null;
       }>;
     };
     Views: Record<string, never>;
@@ -97,7 +120,9 @@ export type AsaasDatabase = {
       };
       // Confirmação e conciliação
       confirm_asaas_charge_payment: {
-        Args: {p_asaas_payment_id: string; p_end_to_end_id: string | null};
+        // p_end_to_end_id tem default no SQL: a confirmação de sandbox chama
+        // só com o id do pagamento.
+        Args: {p_asaas_payment_id: string; p_end_to_end_id?: string | null};
         Returns: undefined;
       };
       mark_asaas_transfer_manual_review: {
@@ -121,6 +146,21 @@ export type AsaasDatabase = {
           p_comment: string | null;
         };
         Returns: undefined;
+      };
+      // Saque do prestador
+      claim_asaas_withdrawal: {
+        Args: {p_amount_cents: number};
+        Returns: Array<{
+          withdrawal_id: string;
+          asaas_account_id: string;
+          api_key_ciphertext: string;
+          api_key_iv: string;
+          bank_code: string;
+          bank_agency: string;
+          bank_account: string;
+          bank_account_digit: string;
+          bank_account_type: string;
+        }>;
       };
       // Disputas
       is_service_dispute_admin: {Args: Record<string, never>; Returns: boolean};

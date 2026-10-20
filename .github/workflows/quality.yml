@@ -18,4 +18,4 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno check functions/process-product-notifications/index.ts functions/shared-vehicle-attachment/index.ts functions/create-asaas-pix/index.ts functions/decide-asaas-dispute/index.ts functions/release-asaas-payment/index.ts functions/asaas-webhook/index.ts functions/asaas-operation-webhook/index.ts
+      - run: deno check functions/process-product-notifications/index.ts functions/shared-vehicle-attachment/index.ts functions/create-asaas-pix/index.ts functions/decide-asaas-dispute/index.ts functions/release-asaas-payment/index.ts functions/asaas-webhook/index.ts functions/asaas-operation-webhook/index.ts functions/asaas-provider-onboarding/index.ts functions/confirm-asaas-sandbox-payment/index.ts functions/request-asaas-withdrawal/index.ts
