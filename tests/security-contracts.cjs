@@ -234,6 +234,8 @@ module.exports = async db => {
 
   const arrival = id(306);
   await openRequest(arrival, 'diagnosis', 'provider_on_site');
+  await q(`insert into service_payment_charges(id,request_id,offer_id,provider_id,kind,amount_cents,status) values($1,$2,(select id from provider_offers where request_id=$2),$3,'dispatch',5000,'paid')`,[id(806),arrival,id(2)]);
+  await q(`insert into provider_wallet_entries(provider_id,request_id,charge_id,gross_amount_cents,provider_net_cents,status) values($1,$2,$3,5000,5000,'held')`,[id(2),arrival,id(806)]);
   await user(1);
   await q(`select confirm_provider_arrival($1)`, [arrival]);
   await q(`select confirm_provider_arrival($1)`, [arrival]);
@@ -241,7 +243,7 @@ module.exports = async db => {
   ok(
     (
       await q(
-        `select * from service_request_events where request_id=$1 and note='Motorista confirmou a chegada do prestador.'`,
+        `select * from service_request_events where request_id=$1 and note='Motorista confirmou a chegada e autorizou a liberação do deslocamento.'`,
         [arrival],
       )
     ).length === 1,
