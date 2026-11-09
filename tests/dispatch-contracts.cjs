@@ -59,5 +59,42 @@ module.exports = async db => {
   await assert.rejects(q('select claim_asaas_withdrawal(500)'),/permission denied/);checks++;
   await admin();await q("select record_payment_reversal($1,'CHARGEBACK_REQUESTED')",[charge]);
   await assert.rejects(q("select reserve_pix_withdrawal($1,500,'12345678901','CPF',$2)",[id(2),id(905)]),/verificação/);checks++;
+  // A nota do deslocamento não conclui o reparo nem duplica o repasse.
+  const ratedRequest=id(910), ratedCharge=id(911);
+  await admin();
+  await q(`insert into service_requests(id,requester_id,vehicle_id,problem_type,description,latitude,longitude,status,workflow_phase)
+    values($1,$2,$3,'engine','Avaliação separada do deslocamento',-23,-46,'open','open')`,[ratedRequest,id(1),id(10)]);
+  await q(`insert into provider_offers(request_id,provider_id,travel_fee_cents,status) values($1,$2,4000,'accepted')`,[ratedRequest,id(2)]);
+  await q(`update service_requests set selected_provider_id=$2,status='provider_on_site',workflow_phase='diagnosis' where id=$1`,[ratedRequest,id(2)]);
+  await q(`insert into service_payment_charges(id,request_id,offer_id,provider_id,kind,amount_cents,status,asaas_payment_id,asaas_sandbox)
+    values($1,$2,(select id from provider_offers where request_id=$2),$3,'dispatch',4000,'paid','pay_rated',true)`,[ratedCharge,ratedRequest,id(2)]);
+  await q(`insert into provider_wallet_entries(provider_id,request_id,charge_id,gross_amount_cents,status)
+    values($1,$2,$3,4000,'held')`,[id(2),ratedRequest,ratedCharge]);
+  await user(1);
+  await q('select confirm_dispatch_arrival_with_review($1,5,$2)',[ratedRequest,'Chegou ao local']);
+  await q('select confirm_dispatch_arrival_with_review($1,5,$2)',[ratedRequest,'Chegou ao local']);
+  await admin();
+  ok((await q('select count(*)::int as n from dispatch_reviews where request_id=$1',[ratedRequest]))[0].n===1,'dispatch review is idempotent');
+  ok((await q('select workflow_phase from service_requests where id=$1',[ratedRequest]))[0].workflow_phase==='diagnosis','repair remains open after arrival review');
+  ok((await q('select count(*)::int as n from service_provider_transfers where request_id=$1',[ratedRequest]))[0].n===1,'arrival review queues one transfer');
+  // Sem resposta do motorista, somente evidência persistida suficiente libera após 24h.
+  const autoRequest=id(920), autoCharge=id(921);
+  await admin();
+  await q(`insert into service_requests(id,requester_id,vehicle_id,problem_type,description,latitude,longitude,status,workflow_phase)
+    values($1,$2,$3,'engine','Liberação automática do deslocamento',-23,-46,'open','open')`,[autoRequest,id(1),id(10)]);
+  await q(`insert into provider_offers(request_id,provider_id,travel_fee_cents,status) values($1,$2,4000,'accepted')`,[autoRequest,id(2)]);
+  await q(`update service_requests set selected_provider_id=$2,status='provider_on_site',workflow_phase='diagnosis' where id=$1`,[autoRequest,id(2)]);
+  await q(`update dispatch_arrival_evidence set arrived_at=now()-interval '25 hours',sample_count=5,closest_meters=20 where request_id=$1`,[autoRequest]);
+  await q(`insert into service_request_events(request_id,actor_id,status,note,created_at) values($1,$2,'provider_on_site','Prestador chegou',now()-interval '25 hours')`,[autoRequest,id(2)]);
+  await q(`insert into service_payment_charges(id,request_id,offer_id,provider_id,kind,amount_cents,status,asaas_payment_id,asaas_sandbox)
+    values($1,$2,(select id from provider_offers where request_id=$2),$3,'dispatch',4000,'paid','pay_auto',true)`,[autoCharge,autoRequest,id(2)]);
+  await q(`insert into provider_wallet_entries(provider_id,request_id,charge_id,gross_amount_cents,status)
+    values($1,$2,$3,4000,'held')`,[id(2),autoRequest,autoCharge]);
+  await db.exec("set role service_role;select set_config('request.jwt.claim.role','service_role',false)");
+  await q('select * from process_overdue_dispatch_arrivals()');
+  await q('select * from process_overdue_dispatch_arrivals()');
+  await admin();
+  ok((await q('select count(*)::int as n from service_provider_transfers where request_id=$1',[autoRequest]))[0].n===1,'24h fallback creates one transfer');
+  ok((await q('select count(*)::int as n from dispatch_reviews where request_id=$1',[autoRequest]))[0].n===0,'fallback never invents a rating');
   console.log(`PASS dispatch / wallet contracts (${checks} checks)`);
 };

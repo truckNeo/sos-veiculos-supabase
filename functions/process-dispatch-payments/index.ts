@@ -9,6 +9,8 @@ export default {
     { auth: "secret" },
     async (request, ctx) => {
       if (request.method !== "POST") return new Response(null, { status: 405 });
+      const overdue = await ctx.supabaseAdmin.rpc("process_overdue_dispatch_arrivals");
+      if (overdue.error) console.error("Liberação automática pendente", overdue.error.message);
       const charges = await ctx.supabaseAdmin
         .from("service_payment_charges")
         .select("id,asaas_payment_id")
