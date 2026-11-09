@@ -41,6 +41,11 @@ module.exports = async db => {
   ok((await q('select is_dispatch_payment_confirmed($1) paid',[request]))[0].paid,'provider can read payment flag without PIX payload');
   await assert.rejects(q('select provider_cancel_dispatch($1)',[request]),/cobrança PIX/); checks++;
   await q(`select transition_service_request_status($1,'provider_en_route')`,[request]);
+  await admin();
+  await q(`insert into service_request_locations(request_id,provider_id,latitude,longitude,accuracy_meters,captured_at,received_at,expires_at)
+    values($1,$2,-23,-46,5,now()-interval '10 seconds',now()-interval '10 seconds',now()+interval '5 minutes'),
+      ($1,$2,-23,-46,5,now()-interval '5 seconds',now()-interval '5 seconds',now()+interval '5 minutes')`,[request,id(2)]);
+  await user(2);
   await q(`select transition_service_request_status($1,'provider_on_site')`,[request]);
   await admin();
   ok((await q('select workflow_phase from service_requests where id=$1',[request]))[0].workflow_phase==='diagnosis','paid dispatch travels then arrives');

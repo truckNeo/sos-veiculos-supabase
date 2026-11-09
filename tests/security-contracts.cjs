@@ -334,6 +334,9 @@ module.exports = async db => {
   ok((await pushed(departure, 'provider_en_route')) === 1, 'deslocamento enfileira push');
 
   // Transição repetida não duplica o aviso.
+  await q(`insert into service_request_locations(request_id,provider_id,latitude,longitude,accuracy_meters,captured_at,received_at,expires_at)
+    values($1,$2,-23,-46,5,now()-interval '10 seconds',now()-interval '10 seconds',now()+interval '5 minutes'),
+      ($1,$2,-23,-46,5,now()-interval '5 seconds',now()-interval '5 seconds',now()+interval '5 minutes')`,[departure,id(2)]);
   await q(`update service_requests set status='provider_on_site' where id=$1`, [departure]);
   await q(`update service_requests set status='provider_en_route' where id=$1`, [departure]);
   await q(`update service_requests set status='provider_on_site' where id=$1`, [departure]);

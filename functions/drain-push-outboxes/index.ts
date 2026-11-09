@@ -46,6 +46,10 @@ const DRIVER_COPY: Record<string, { title: string; message: string }> = {
     title: "Prestador chegou",
     message: "O prestador informou que chegou ao local.",
   },
+  arrival_manual_requested: {
+    title: "Confirme a chegada presencialmente",
+    message: "O prestador solicitou confirmação sem GPS verificado. Abra o atendimento para confirmar ou contestar.",
+  },
   awaiting_driver_confirmation: {
     title: "Serviço pronto para conferência",
     message: "Confira o atendimento para concluir.",
