@@ -142,6 +142,10 @@ export type AsaasDatabase = {
     };
     Views: Record<string, never>;
     Functions: {
+      process_overdue_dispatch_arrivals: {
+        Args: Record<string, never>;
+        Returns: { auto_released: number; manual_review: number }[];
+      };
       record_payment_reversal: {
         Args: { p_charge_id: string; p_state: string };
         Returns: undefined;
