@@ -153,7 +153,9 @@ module.exports = async db => {
   await q('select request_manual_provider_arrival($1,$2)',[manualRequest,'GPS sem sinal perto do motorista']);
   await q('select request_manual_provider_arrival($1,$2)',[manualRequest,'GPS sem sinal perto do motorista']);
   await user(1);
-  await q('select confirm_manual_provider_arrival_with_review($1,5,$2)',[manualRequest,'Confirmado presencialmente']);
+  await q('select confirm_manual_provider_arrival($1)',[manualRequest]);
+  await q('select confirm_manual_provider_arrival($1)',[manualRequest]);
+  ok((await q('select count(*)::int n from dispatch_reviews where request_id=$1',[manualRequest]))[0].n===0,'arrival confirmation creates no review');
   await admin();
   ok((await q('select status,provider_arrival_confirmed_at from service_requests where id=$1',[manualRequest]))[0].provider_arrival_confirmed_at!==null,'driver can confirm manual arrival');
   ok(!(await q('select geofence_verified from dispatch_arrival_evidence where request_id=$1',[manualRequest]))[0].geofence_verified,'manual arrival is never GPS verified');
