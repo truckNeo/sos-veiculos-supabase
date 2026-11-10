@@ -6,6 +6,7 @@ const db=new PGlite();
 await db.exec(`create role anon; create role authenticated; create role service_role bypassrls; alter default privileges in schema public grant select,insert,update,delete on tables to authenticated,service_role; create schema auth; create schema storage; create schema extensions;
 create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz);
 create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+create function auth.role() returns text language sql stable as $$select current_setting('request.jwt.claim.role',true)$$;
 grant usage on schema auth to authenticated;
 create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
 create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text,owner_id text); alter table storage.objects enable row level security;
@@ -27,5 +28,5 @@ for(const name of [...new Set([...fs.readdirSync(root).filter(n=>n.endsWith('.sq
 console.log('PASS all migration DDL (spatial functions stubbed)');
 if(process.env.SOS_SCHEMA_OUTPUT){const sql=fs.readFileSync(path.join(__dirname,'inspect-favorites.sql'),'utf8');fs.writeFileSync(process.env.SOS_SCHEMA_OUTPUT,JSON.stringify((await db.query(sql)).rows));}
 if(process.env.SOS_SCHEMA_COLUMNS){fs.writeFileSync(process.env.SOS_SCHEMA_COLUMNS,JSON.stringify((await db.query(fs.readFileSync(path.join(__dirname,'inspect-remote.sql'),'utf8'))).rows));}
-try {await require('./product-contracts.cjs')(db);await require('./security-contracts.cjs')(db);await require('./asaas-contracts.cjs')(db);} finally {await db.close();}
+try {await require('./product-contracts.cjs')(db);await require('./security-contracts.cjs')(db);await require('./asaas-contracts.cjs')(db);await require('./dispatch-contracts.cjs')(db);} finally {await db.close();}
 })().catch(e=>{console.error(e);process.exitCode=1});

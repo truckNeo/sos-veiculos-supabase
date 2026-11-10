@@ -2,28 +2,22 @@ import {withSupabase} from 'npm:@supabase/server';
 
 import {
   hmacDocument,
-  normalizeBrazilianPhone,
   normalizeDigits,
 } from '../_shared/auth.ts';
 
 export default {
   fetch: withSupabase({auth: 'publishable'}, async (request, ctx) => {
     const {identifier, password} = await request.json();
-    const digits = normalizeDigits(identifier ?? '');
-    if (!password || !digits) {
-      return Response.json({message: 'Informe seu CPF ou telefone e a senha.'}, {status: 400});
+    if (typeof identifier !== 'string' || typeof password !== 'string' || !password) {
+      return Response.json({message: 'Informe seu CPF ou CNPJ e a senha.'}, {status: 400});
+    }
+    const digits = normalizeDigits(identifier);
+    if (digits.length !== 11 && digits.length !== 14) {
+      return Response.json({message: 'Informe um CPF com 11 dígitos ou um CNPJ com 14 dígitos.'}, {status: 400});
     }
 
-    let profileQuery = ctx.supabaseAdmin.from('profiles').select('id').limit(1);
-    if (digits.length === 11 || digits.length === 14) {
-      profileQuery = profileQuery.eq('document_hash', await hmacDocument(digits));
-    } else {
-      const phone = normalizeBrazilianPhone(identifier);
-      if (!phone) {
-        return Response.json({message: 'CPF ou telefone inválido.'}, {status: 400});
-      }
-      profileQuery = profileQuery.eq('phone_lookup', normalizeDigits(phone));
-    }
+    const profileQuery = ctx.supabaseAdmin.from('profiles').select('id').limit(1)
+      .eq('document_hash', await hmacDocument(digits));
 
     const {data: profile, error: profileError} = await profileQuery.maybeSingle();
     if (profileError) {

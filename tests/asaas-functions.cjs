@@ -7,10 +7,10 @@ const path=require('node:path');
 const vm=require('node:vm');
 function load(name,ctx,fetch,sandbox=true,env={}){
   const source=fs.readFileSync(path.join(__dirname,'../functions',name,'index.ts'),'utf8')
-    .replace(/^import .*;\n/gm,'').replace('export default','module.exports =');
+    .replace(/^import[\s\S]*?;\n/gm,'').replace('export default','module.exports =');
   const module={exports:{}};
   vm.runInNewContext(stripTypeScriptTypes(source),{module,Response,encodeURIComponent,console,
-    Deno:{env:{get:(key)=>env[key]}},withSupabase:(_config,handler)=>(request)=>handler(request,ctx),asaasFetch:fetch,isAsaasSandbox:()=>sandbox,normalizeDigits:(v)=>String(v).replace(/\D/g,''),hmacDocument:async()=> 'document_hash'});
+    ensurePaymentCustomer:async()=> 'cus-1', reconcileDispatchTransfer:async()=>({state:'processing'}), reconcilePayment:async(admin,id)=>{const result=await admin.rpc('confirm_asaas_charge_payment',{p_asaas_payment_id:id});if(result.error)throw Error(result.error.message);}, Deno:{env:{get:(key)=>env[key]}},withSupabase:(_config,handler)=>(request)=>handler(request,ctx),asaasFetch:fetch,isAsaasSandbox:()=>sandbox,normalizeDigits:(v)=>String(v).replace(/\D/g,''),hmacDocument:async()=> 'document_hash'});
   return module.exports.fetch;
 }
 const request=(body)=>new Request('https://local.test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -72,17 +72,21 @@ function releaseFixture(stored){
   const ctx={supabase:{from:()=>chain,rpc:async()=>({data:[{transfer_id:'t1'}]})},supabaseAdmin:{from:()=>chain,rpc:async(name)=>{calls.push(name);return {data:[{provider_net_cents:4500,wallet_id:'wallet-1'}]};}}};
   return {ctx,calls,updates};
 }
-test('repasse comum aceito ainda não é sucesso financeiro',async()=>{
-  const f=releaseFixture({id:'t1',status:'pending',asaas_transfer_id:null});
-  const handler=load('release-asaas-payment',f.ctx,async()=>gateway({id:'transfer-1',status:'PENDING'}));
-  assert.equal((await handler(request({requestId:'r1',rating:5,comment:null}))).status,409);
-  assert.equal(f.updates[0].asaas_transfer_id,'transfer-1');assert.ok(!f.calls.includes('complete_asaas_payment_release_with_review'));
+test('avaliação salva sem consultar o gateway financeiro',async()=>{
+  const f=releaseFixture({id:'t1',status:'processing',asaas_transfer_id:'transfer-1'});
+  const calls=[];f.ctx.supabase.rpc=async(name,args)=>{calls.push({name,args});return {error:null};};
+  const handler=load('release-asaas-payment',f.ctx,async()=>{throw Error('avaliação não transfere');});
+  const response=await handler(request({requestId:'r1',rating:5,comment:'Bom'}));
+  assert.equal(response.status,200);assert.equal((await response.json()).reviewSaved,true);
+  assert.equal(calls[0].name,'complete_service_with_review');assert.equal(calls[0].args.p_rating,5);
+  assert.equal(f.updates.length,0);
 });
-test('repasse comum é conciliado sem repetir transferência',async()=>{
-  const f=releaseFixture({id:'t1',status:'processing',asaas_transfer_id:'transfer-1'});let posts=0;
-  const handler=load('release-asaas-payment',f.ctx,async(_url,opts)=>{if(opts)posts++;return gateway({id:'transfer-1',status:'DONE'});});
-  assert.equal((await handler(request({requestId:'r1',rating:5,comment:null}))).status,200);
-  assert.equal(posts,0);assert.ok(f.calls.includes('complete_asaas_payment_release_with_review'));
+test('chegada persistida devolve 202 enquanto repasse processa',async()=>{
+  const f=releaseFixture({id:'t1'});const calls=[];
+  f.ctx.supabase.rpc=async(name)=>{calls.push(name);return {error:null};};
+  const response=await load('release-asaas-payment',f.ctx,async()=>{})(request({requestId:'r1'}));
+  assert.equal(response.status,202);assert.equal((await response.json()).arrivalConfirmed,true);
+  assert.deepEqual(calls,['confirm_provider_arrival']);
 });
 
 test('webhook de operação recusa token ausente',async()=>{
@@ -101,16 +105,13 @@ test('webhook só aprova repasse registrado com valor e wallet conferidos',async
 });
 
 function pixFixture(claimed=true){
-  const charge={id:'charge-1',provider_id:'provider-1',kind:'dispatch',status:'pending',amount_cents:5000,asaas_sandbox:true};
+  const charge={id:'charge-1',provider_id:'provider-1',kind:'dispatch',status:'pending',amount_cents:5000,asaas_sandbox:true,billing_method:'PIX'};
   const updates=[];const rpcCalls=[];
   const ctx={supabase:{from:()=>({select(){return this;},eq(){return this;},maybeSingle:async()=>({data:charge})}),
     auth:{getUser:async()=>({data:{user:{id:'user-1',email:'test@example.test'}}})},
     rpc:async(name,args)=>{rpcCalls.push({name,args});return {error:null};}},
-    supabaseAdmin:{from:()=>({select(){return this;},eq(){return this;},update(v){updates.push(v);return this;},maybeSingle:async()=>({data:{status:'verified'}}),then(resolve){resolve({error:null});}}),
+    supabaseAdmin:{from:()=>({select(){return this;},eq(){return this;},update(v){updates.push(v);return this;},maybeSingle:async()=>({data:{status:'verified',sandbox:true}}),then(resolve){resolve({error:null});}}),
     rpc:async()=>({data:claimed})}};
-  // profiles é lido com o cliente autenticado, depois da cobrança.
-  let reads=0;
-  ctx.supabase.from=()=>({select(){return this;},eq(){return this;},maybeSingle:async()=>({data:reads++%2===0?charge:{full_name:'Teste',document_hash:'document_hash',asaas_customer_id:'cus-1'}})});
   return {ctx,charge,updates,rpcCalls};
 }
 const pixPayment={id:'pay-pix',externalReference:'charge-1',customer:'cus-1',billingType:'PIX',value:50,status:'PENDING'};
@@ -204,7 +205,7 @@ test('falha na confirmacao devolve erro e guarda o motivo no evento',async()=>{
   assert.equal(response.status,500);
   const failed=f.marks.find(m=>m.name==='mark_asaas_webhook_event_failed');
   assert.ok(failed,'o evento precisa ser marcado como falho');
-  assert.match(failed.args.p_error,/deadlock detectado/);
+  assert.match(failed.args.p_error,/conciliação verificada/);
   assert.ok(!f.marks.some(m=>m.name==='mark_asaas_webhook_event_processed'));
 });
 test('reentrega de evento ja processado nao repete o efeito financeiro',async()=>{
@@ -218,7 +219,7 @@ test('falha no saque do TRANSFER_DONE nao passa mais em silencio',async()=>{
   const f=webhookFixture({updateErrors:{provider_asaas_withdrawals:{message:'coluna ausente'}}});
   const response=await webhook(f)(hook({id:'evt-2',event:'TRANSFER_DONE',transfer:{id:'tr-1',externalReference:'op-1'}}));
   assert.equal(response.status,500);
-  assert.match(f.marks.find(m=>m.name==='mark_asaas_webhook_event_failed').args.p_error,/provider_asaas_withdrawals/);
+  assert.match(f.marks.find(m=>m.name==='mark_asaas_webhook_event_failed').args.p_error,/conciliação verificada/);
 });
 test('evento processado com sucesso recebe baixa e 200',async()=>{
   const f=webhookFixture();
@@ -230,4 +231,24 @@ test('evento processado com sucesso recebe baixa e 200',async()=>{
 test('baixa que falha pede reentrega em vez de mentir sobre o processamento',async()=>{
   const f=webhookFixture({rpcErrors:{mark_asaas_webhook_event_processed:{message:'timeout'}}});
   assert.equal((await webhook(f)(hook(payment()))).status,500);
+});
+
+for(const [method,billing] of [['CREDIT_CARD','CREDIT_CARD'],['DEBIT_CARD','UNDEFINED']]) {
+ test(`checkout ${method} é hospedado sem receber dados de cartão`,async()=>{
+  const f=pixFixture();const calls=[];
+  const handler=load('create-asaas-pix',f.ctx,async(url,opts)=>{calls.push({url,opts});return gateway({...pixPayment,billingType:billing,invoiceUrl:'https://sandbox.asaas.com/i/test'});});
+  const result=await handler(request({chargeId:'charge-1',paymentMethod:method}));
+  assert.equal(result.status,200);assert.equal((await result.json()).copyPaste,null);
+  assert.equal(calls.length,1);assert.equal(calls[0].opts.body.billingType,billing);assert.equal(calls[0].opts.body.creditCard,undefined);
+ });
+}
+test('troca de método depois da emissão não cria segunda cobrança',async()=>{
+ const f=pixFixture();f.charge.asaas_payment_id='pay-1';f.charge.billing_method='PIX';
+ const handler=load('create-asaas-pix',f.ctx,async()=>{throw Error('não deve emitir')});
+ assert.equal((await handler(request({chargeId:'charge-1',paymentMethod:'CREDIT_CARD'}))).status,409);
+});
+test('recupera cobrança já paga após perda da resposta sem gerar outro pagamento',async()=>{
+ const f=pixFixture(false);let posts=0;
+ const handler=load('create-asaas-pix',f.ctx,async(_url,opts)=>{if(opts?.body)posts++;return gateway({data:[{...pixPayment,status:'RECEIVED'}]});});
+ const response=await handler(pixRequest());assert.equal(response.status,200);assert.equal((await response.json()).paid,true);assert.equal(posts,0);
 });

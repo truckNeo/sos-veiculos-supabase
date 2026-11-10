@@ -1,6 +1,10 @@
-import {withSupabase} from 'npm:@supabase/server@1.4.1';
-import type {AsaasDatabase} from '../_shared/asaas-database.ts';
-import {asaasFetch} from '../_shared/asaas.ts';
+import { withSupabase } from "npm:@supabase/server@1.4.1";
+import type { AsaasDatabase } from "../_shared/asaas-database.ts";
+import {
+  asaasFetch,
+  decryptProviderApiKey,
+  isAsaasSandbox,
+} from "../_shared/asaas.ts";
 
 const secureEqual = (a: string, b: string) => {
   if (!a.length || a.length !== b.length) return false;
@@ -8,33 +12,139 @@ const secureEqual = (a: string, b: string) => {
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 };
-const refuse = (refuseReason: string) => Response.json({status: 'REFUSED', refuseReason});
+const refuse = (refuseReason: string) =>
+  Response.json({ status: "REFUSED", refuseReason });
 
 export default {
-  fetch: withSupabase<AsaasDatabase>({auth: 'none'}, async (request, ctx) => {
-    const token = (Deno.env.get('ASAAS_OPERATION_WEBHOOK_TOKEN') ?? '').trim();
-    if (!token) return Response.json({status: 'REFUSED', refuseReason: 'Webhook não configurado.'}, {status: 503});
-    if (!secureEqual((request.headers.get('asaas-access-token') ?? '').trim(), token)) return Response.json({status: 'REFUSED', refuseReason: 'Token inválido.'}, {status: 401});
-    let payload: {type?: string; transfer?: {id?: string; externalReference?: string; value?: number}};
-    try {payload = await request.json();} catch {return refuse('Payload inválido.');}
+  fetch: withSupabase<AsaasDatabase>({ auth: "none" }, async (request, ctx) => {
+    const token = (Deno.env.get("ASAAS_OPERATION_WEBHOOK_TOKEN") ?? "").trim();
+    if (!token)
+      return Response.json(
+        { status: "REFUSED", refuseReason: "Webhook não configurado." },
+        { status: 503 }
+      );
+    if (
+      !secureEqual(
+        (request.headers.get("asaas-access-token") ?? "").trim(),
+        token
+      )
+    )
+      return Response.json(
+        { status: "REFUSED", refuseReason: "Token inválido." },
+        { status: 401 }
+      );
+    let payload: {
+      type?: string;
+      transfer?: { id?: string; externalReference?: string; value?: number };
+    };
+    try {
+      payload = await request.json();
+    } catch {
+      return refuse("Payload inválido.");
+    }
     const transfer = payload.transfer;
-    if (payload.type !== 'TRANSFER' || !transfer?.id || !transfer.externalReference || !/^[0-9a-f-]{36}$/i.test(transfer.externalReference)) return refuse('Operação sem repasse registrado.');
-    const {data: expected, error} = await ctx.supabaseAdmin.from('service_provider_transfers')
-      .select('provider_id,provider_net_cents,status').eq('id', transfer.externalReference).maybeSingle();
-    if (error || !expected || !['processing','manual_review'].includes(expected.status)) return refuse('Repasse não autorizado no sistema.');
-    const {data: account, error: accountError} = await ctx.supabaseAdmin.from('provider_asaas_accounts')
-      .select('wallet_id,status').eq('provider_id', expected.provider_id).maybeSingle();
-    if (accountError || account?.status !== 'verified' || !account.wallet_id) return refuse('Subconta não verificada.');
+    if (
+      payload.type !== "TRANSFER" ||
+      !transfer?.id ||
+      !transfer.externalReference ||
+      !/^[0-9a-f-]{36}$/i.test(transfer.externalReference)
+    )
+      return refuse("Operação sem repasse registrado.");
+    const { data: expected, error } = await ctx.supabaseAdmin
+      .from("service_provider_transfers")
+      .select("provider_id,provider_net_cents,status")
+      .eq("id", transfer.externalReference)
+      .maybeSingle();
+    if (error) return refuse("Consulta financeira indisponível.");
+    if (!expected) {
+      const { data: withdrawal, error: withdrawalError } =
+        await ctx.supabaseAdmin
+          .from("provider_asaas_withdrawals")
+          .select("*")
+          .eq("id", transfer.externalReference)
+          .maybeSingle();
+      if (
+        withdrawalError ||
+        !withdrawal ||
+        !["requested", "manual_review"].includes(withdrawal.status)
+      )
+        return refuse("Saque não reservado.");
+      const { data: account } = await ctx.supabaseAdmin
+        .from("provider_asaas_accounts")
+        .select("api_key_ciphertext,api_key_iv,sandbox,financial_block_reason")
+        .eq("provider_id", withdrawal.provider_id)
+        .single();
+      if (
+        !account?.api_key_ciphertext ||
+        !account.api_key_iv ||
+        account.sandbox !== isAsaasSandbox() ||
+        account.financial_block_reason
+      )
+        return refuse("Conta indisponível.");
+      try {
+        const key = await decryptProviderApiKey(
+          account.api_key_ciphertext,
+          account.api_key_iv
+        );
+        const response = await asaasFetch(
+          `/transfers/${encodeURIComponent(transfer.id)}`,
+          { key }
+        );
+        if (!response.ok) return refuse("Saque não conferido.");
+        const actual = await response.json();
+        if (
+          actual.id !== transfer.id ||
+          actual.externalReference !== withdrawal.id ||
+          Math.round(Number(actual.value) * 100) !== withdrawal.amount_cents ||
+          actual.pixAddressKey !== withdrawal.payout_pix_key ||
+          (withdrawal.asaas_transfer_id &&
+            withdrawal.asaas_transfer_id !== actual.id)
+        )
+          return refuse("Saque divergente da reserva.");
+        return Response.json({ status: "APPROVED" });
+      } catch {
+        return refuse("Saque aguarda conferência.");
+      }
+    }
+    if (!["processing", "manual_review"].includes(expected.status))
+      return refuse("Repasse não autorizado no sistema.");
+    const { data: account, error: accountError } = await ctx.supabaseAdmin
+      .from("provider_asaas_accounts")
+      .select("wallet_id,status")
+      .eq("provider_id", expected.provider_id)
+      .maybeSingle();
+    if (accountError || account?.status !== "verified" || !account.wallet_id)
+      return refuse("Subconta não verificada.");
     // Confere o destino na API autenticada, e não apenas no payload recebido.
     try {
-      const response = await asaasFetch(`/transfers/${encodeURIComponent(transfer.id)}`);
-      if (!response.ok) return refuse('Não foi possível conferir o repasse.');
-      const actual = await response.json() as {walletId?: string; value?: number; externalReference?: string};
-      const maxValue = Number(Deno.env.get('ASAAS_OPERATION_WEBHOOK_MAX_VALUE') ?? '5000');
-      if (!Number.isFinite(maxValue) || maxValue <= 0 || typeof actual.value !== 'number' || !Number.isFinite(actual.value)
-        || Math.round(actual.value * 100) !== expected.provider_net_cents || actual.value > maxValue
-        || actual.walletId !== account.wallet_id || actual.externalReference !== transfer.externalReference) return refuse('Valor, destino ou referência divergente do repasse autorizado.');
-      return Response.json({status: 'APPROVED'});
-    } catch {return refuse('Falha ao conferir o repasse.');}
+      const response = await asaasFetch(
+        `/transfers/${encodeURIComponent(transfer.id)}`
+      );
+      if (!response.ok) return refuse("Não foi possível conferir o repasse.");
+      const actual = (await response.json()) as {
+        walletId?: string;
+        value?: number;
+        externalReference?: string;
+      };
+      const maxValue = Number(
+        Deno.env.get("ASAAS_OPERATION_WEBHOOK_MAX_VALUE") ?? "5000"
+      );
+      if (
+        !Number.isFinite(maxValue) ||
+        maxValue <= 0 ||
+        typeof actual.value !== "number" ||
+        !Number.isFinite(actual.value) ||
+        Math.round(actual.value * 100) !== expected.provider_net_cents ||
+        actual.value > maxValue ||
+        actual.walletId !== account.wallet_id ||
+        actual.externalReference !== transfer.externalReference
+      )
+        return refuse(
+          "Valor, destino ou referência divergente do repasse autorizado."
+        );
+      return Response.json({ status: "APPROVED" });
+    } catch {
+      return refuse("Falha ao conferir o repasse.");
+    }
   }),
 };

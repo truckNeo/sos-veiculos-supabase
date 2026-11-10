@@ -12,7 +12,7 @@ for(const n of [2,4]){
 await q(`insert into provider_profiles(provider_id,business_name,is_available) values($1,'Workshop',true)`,[id(n)]);
 await q(`insert into provider_services(provider_id,problem_type) values($1,'engine')`,[id(n)]);
 await q(`insert into provider_locations(provider_id,latitude,longitude) values($1,-23,-46)`,[id(n)]);
-await q(`insert into provider_vehicles(provider_id,vehicle_type,plate,model) values($1,'service',$2,'Van')`,[id(n),`ABC1D2${n}`]);
+await q(`insert into provider_vehicles(provider_id,vehicle_type,plate,model,color) values($1,'service',$2,'Van','Branco')`,[id(n),`ABC1D2${n}`]);
 }
 await user(1);
 const plan=(await q(`insert into vehicle_maintenance_plans(vehicle_id,title,due_date,interval_days,due_odometer,interval_km) values($1,'Trocar óleo',current_date+90,180,100000,10000) returning *`,[id(10)]))[0];

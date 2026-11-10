@@ -11,9 +11,15 @@
  * Um contrato por domínio, e não por função: a mesma tabela declarada em dois
  * lugares divergiria em silêncio.
  */
-type Table<Row> = {Row: Row; Insert: Partial<Row>; Update: Partial<Row>; Relationships: []};
+type Table<Row> = {
+  Row: Row;
+  Insert: Partial<Row>;
+  Update: Partial<Row>;
+  Relationships: [];
+};
 
 type ServicePaymentCharge = {
+  updated_at: string;
   id: string;
   request_id: string;
   provider_id: string;
@@ -26,10 +32,18 @@ type ServicePaymentCharge = {
   pix_copy_paste: string | null;
   asaas_checkout_claimed_at: string | null;
   asaas_sandbox: boolean;
+  billing_method: string;
+  settled_at: string | null;
+  financial_status: string | null;
+  gateway_net_cents: number | null;
 };
 
 type ServiceProviderTransfer = {
+  updated_at: string;
   id: string;
+  request_id: string;
+  created_at: string;
+  failure_reason: string | null;
   provider_id: string;
   provider_net_cents: number;
   status: string;
@@ -39,7 +53,7 @@ type ServiceProviderTransfer = {
 /** Espelha o type Operation consumido por decide-asaas-dispute. */
 type AsaasDisputeOperation = {
   id: string;
-  decision: 'driver_refunded' | 'provider_released';
+  decision: "driver_refunded" | "provider_released";
   status: string;
   amount_cents: number;
   asaas_payment_id: string | null;
@@ -53,10 +67,28 @@ type AsaasDisputeOperation = {
 export type AsaasDatabase = {
   public: {
     Tables: {
+      provider_onboarding_attempts: Table<{
+        provider_id: string;
+        sandbox: boolean;
+      }>;
+      payment_customer_profiles: Table<{
+        user_id: string;
+        document_ciphertext: string;
+        document_iv: string;
+        customer_id: string | null;
+        sandbox: boolean | null;
+        provisioning_at: string | null;
+      }>;
+      service_requests: Table<{
+        id: string;
+        provider_arrival_confirmed_at: string | null;
+      }>;
       service_payment_charges: Table<ServicePaymentCharge>;
       service_provider_transfers: Table<ServiceProviderTransfer>;
       asaas_dispute_operations: Table<AsaasDisputeOperation>;
       provider_asaas_accounts: Table<{
+        sandbox: boolean | null;
+        financial_block_reason: string | null;
         provider_id: string;
         asaas_account_id: string;
         wallet_id: string | null;
@@ -68,6 +100,8 @@ export type AsaasDatabase = {
         // A apiKey da subconta fica cifrada aqui; só o saque a decifra.
         api_key_ciphertext: string | null;
         api_key_iv: string | null;
+        payout_pix_key: string | null;
+        payout_pix_type: string | null;
         bank_code: string | null;
         bank_agency: string | null;
         bank_account: string | null;
@@ -75,6 +109,12 @@ export type AsaasDatabase = {
         bank_account_type: string | null;
       }>;
       provider_asaas_withdrawals: Table<{
+        created_at: string;
+        provider_id: string;
+        amount_cents: number;
+        payout_pix_key: string | null;
+        payout_pix_type: string | null;
+        updated_at: string;
         id: string;
         asaas_transfer_id: string | null;
         status: string;
@@ -102,9 +142,41 @@ export type AsaasDatabase = {
     };
     Views: Record<string, never>;
     Functions: {
+      process_overdue_dispatch_arrivals: {
+        Args: Record<string, never>;
+        Returns: { auto_released: number; manual_review: number }[];
+      };
+      record_payment_reversal: {
+        Args: { p_charge_id: string; p_state: string };
+        Returns: undefined;
+      };
+      reserve_pix_withdrawal: {
+        Args: {
+          p_provider: string;
+          p_amount_cents: number;
+          p_key: string;
+          p_key_type: string;
+          p_command_id: string;
+        };
+        Returns: string;
+      };
+      mark_service_charge_checkout: {
+        Args: {
+          p_charge_id: string;
+          p_payment_id: string;
+          p_method: string;
+          p_url: string;
+          p_sandbox: boolean;
+        };
+        Returns: undefined;
+      };
       // Emissão do PIX
       claim_asaas_charge_checkout: {
-        Args: {p_charge_id: string; p_requester_id: string; p_sandbox: boolean};
+        Args: {
+          p_charge_id: string;
+          p_requester_id: string;
+          p_sandbox: boolean;
+        };
         Returns: boolean;
       };
       mark_service_charge_asaas_checkout: {
@@ -122,21 +194,37 @@ export type AsaasDatabase = {
       confirm_asaas_charge_payment: {
         // p_end_to_end_id tem default no SQL: a confirmação de sandbox chama
         // só com o id do pagamento.
-        Args: {p_asaas_payment_id: string; p_end_to_end_id?: string | null};
+        Args: { p_asaas_payment_id: string; p_end_to_end_id?: string | null };
         Returns: undefined;
       };
       mark_asaas_transfer_manual_review: {
-        Args: {p_transfer_id: string; p_reason: string};
+        Args: { p_transfer_id: string; p_reason: string };
+        Returns: undefined;
+      };
+      confirm_provider_arrival: {
+        Args: { p_request_id: string };
+        Returns: undefined;
+      };
+      complete_service_with_review: {
+        Args: {
+          p_request_id: string;
+          p_rating: number;
+          p_comment: string | null;
+        };
+        Returns: undefined;
+      };
+      complete_dispatch_transfer: {
+        Args: { p_transfer_id: string; p_asaas_transfer_id: string };
         Returns: undefined;
       };
       // Repasse ao prestador
       begin_asaas_payment_release: {
-        Args: {p_request_id: string};
-        Returns: Array<{transfer_id: string}>;
+        Args: { p_request_id: string };
+        Returns: Array<{ transfer_id: string }>;
       };
       claim_asaas_provider_transfer: {
-        Args: {p_transfer_id: string};
-        Returns: Array<{provider_net_cents: number; wallet_id: string}>;
+        Args: { p_transfer_id: string };
+        Returns: Array<{ provider_net_cents: number; wallet_id: string }>;
       };
       complete_asaas_payment_release_with_review: {
         Args: {
@@ -149,7 +237,7 @@ export type AsaasDatabase = {
       };
       // Saque do prestador
       claim_asaas_withdrawal: {
-        Args: {p_amount_cents: number};
+        Args: { p_amount_cents: number };
         Returns: Array<{
           withdrawal_id: string;
           asaas_account_id: string;
@@ -163,27 +251,41 @@ export type AsaasDatabase = {
         }>;
       };
       // Disputas
-      is_service_dispute_admin: {Args: Record<string, never>; Returns: boolean};
+      is_service_dispute_admin: {
+        Args: Record<string, never>;
+        Returns: boolean;
+      };
       begin_asaas_dispute_settlement: {
-        Args: {p_request_id: string; p_decision: string; p_note: string};
+        Args: { p_request_id: string; p_decision: string; p_note: string };
         Returns: AsaasDisputeOperation[];
       };
       claim_asaas_dispute_operation: {
-        Args: {p_operation_id: string};
+        Args: { p_operation_id: string };
         Returns: AsaasDisputeOperation[];
       };
       decide_service_dispute: {
-        Args: {p_request_id: string; p_decision: string; p_decision_note: string};
+        Args: {
+          p_request_id: string;
+          p_decision: string;
+          p_decision_note: string;
+        };
         Returns: undefined;
       };
       // Inbox do webhook de notificação
       record_asaas_webhook_event: {
-        Args: {p_dedupe_key: string; p_event_type: string; p_payload: unknown};
-        Returns: Array<{event_id: string; already_processed: boolean}>;
+        Args: {
+          p_dedupe_key: string;
+          p_event_type: string;
+          p_payload: unknown;
+        };
+        Returns: Array<{ event_id: string; already_processed: boolean }>;
       };
-      mark_asaas_webhook_event_processed: {Args: {p_event_id: string}; Returns: undefined};
+      mark_asaas_webhook_event_processed: {
+        Args: { p_event_id: string };
+        Returns: undefined;
+      };
       mark_asaas_webhook_event_failed: {
-        Args: {p_event_id: string; p_error: string};
+        Args: { p_event_id: string; p_error: string };
         Returns: undefined;
       };
     };
