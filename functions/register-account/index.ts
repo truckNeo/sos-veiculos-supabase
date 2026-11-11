@@ -7,6 +7,7 @@ import {
   normalizeBrazilianPhone,
   normalizeDigits,
 } from "../_shared/auth.ts";
+import { isValidCnpj, isValidCpf } from "../_shared/document.ts";
 
 const EMAIL_REDIRECT_URL = "https://www.truckneo.com.br/confirmar-conta";
 
@@ -89,7 +90,11 @@ export default {
           input.role === "driver" && input.accountKind === "individual";
         const expectedDocumentLength =
           input.role === "provider" || isDriverCompany ? 14 : 11;
-        const isValidDocument = document.length === expectedDocumentLength;
+        const isValidDocument =
+          document.length === expectedDocumentLength &&
+          (expectedDocumentLength === 14
+            ? isValidCnpj(document)
+            : isValidCpf(document));
 
         if (
           !name ||

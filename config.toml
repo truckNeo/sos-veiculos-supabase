@@ -19,6 +19,9 @@ verify_jwt = false
 [functions.request-password-reset]
 verify_jwt = false
 
+[functions.resend-confirmation]
+verify_jwt = false
+
 [functions.send-push-notification]
 verify_jwt = false
 

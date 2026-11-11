@@ -36,6 +36,13 @@ export default {
       email: userData.user.email,
       password,
     });
+    if (signInError?.code === 'email_not_confirmed') {
+      return Response.json({
+        code: 'email_not_confirmed',
+        email: userData.user.email,
+        message: 'Confirme seu e-mail para entrar. Reenvie o link de confirmação se precisar.',
+      }, {status: 403});
+    }
     if (signInError || !sessionData.session) {
       return Response.json({message: signInError?.message ?? 'Credenciais inválidas.'}, {status: 401});
     }
