@@ -156,7 +156,7 @@ export default {
             !/^[A-Z]{2}$/.test(providerState ?? "") ||
             !Number.isInteger(providerRadius) ||
             providerRadius < 1 ||
-            providerRadius > 500 ||
+            providerRadius > 700 ||
             providerServices.length === 0)
         ) {
           return Response.json(

@@ -37,11 +37,19 @@ await q(`select complete_vehicle_maintenance_v2($1,$2,$3,100000,$4,null)`,[plan.
 ok((await q('select * from list_maintenance_history($1)',[id(10)])).length===1,'completion idempotent');
 await q(`update vehicle_maintenance_plans set title='Novo título' where id=$1`,[plan.id]);ok((await q('select * from list_maintenance_history($1)',[id(10)]))[0].title==='Trocar óleo','snapshot retained');
 await denied('select complete_vehicle_maintenance($1,$2,100000)',[plan.id,plan.due_date],/Atualize/);
+await user(2);
+const saveProfile=r=>q(`select save_provider_business_profile('Workshop','Workshop LTDA','85855000','Av Meira','2345',null,'Porto Meira','Foz do Iguaçu','PR',$1,true,array['engine']::request_problem_type[])`,[r]);
+await saveProfile(700);ok((await q('select service_radius_km from provider_profiles where provider_id=$1',[id(2)]))[0].service_radius_km===700,'provider radius accepts 700 km');
+await denied('select 1 from (select save_provider_business_profile(\'Workshop\',\'Workshop LTDA\',\'85855000\',\'Av Meira\',\'2345\',null,\'Porto Meira\',\'Foz do Iguaçu\',\'PR\',701,true,array[\'engine\']::request_problem_type[])) x',[],/entre 1 e 700/);
+await denied('select save_provider_business_profile(\'Workshop\',\'Workshop LTDA\',\'85855000\',\'Av Meira\',\'2345\',null,\'Porto Meira\',\'Foz do Iguaçu\',\'PR\',0,true,array[\'engine\']::request_problem_type[])',[],/entre 1 e 700/);
+await admin();await denied('update provider_profiles set service_radius_km=701 where provider_id=$1',[id(2)],/check/);
+await user(1);
 // Favorite notification regression: independent table/schema.
 await q('select create_favorite_mechanic_invite($1)',[id(2)]);
 await admin();ok((await q('select * from app_notifications')).length===1,'favorite inbox preserved');
 await user(1);
 const appt=(await q(`select create_service_appointment_v2($1,$2,now()+interval '1 day',60,'Troca de óleo',$3) id`,[id(10),id(2),plan.id]))[0].id;
+ok((await q('select vehicle_odometer from service_appointments where id=$1',[appt]))[0].vehicle_odometer===100000,'appointment snapshots vehicle km');
 await denied(`select convert_service_appointment($1,'engine','Troca de óleo',-23,-46,'Oficina confirmada')`,[appt],/horário/);
 await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[appt]);
 await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[appt]);
