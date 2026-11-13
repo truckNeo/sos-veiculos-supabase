@@ -209,35 +209,59 @@ export default {
           );
         }
 
+        if (input.role === "provider") {
+          stage = "lookup-provider-plate";
+          const { data: plateOwner, error: plateError } =
+            await ctx.supabaseAdmin
+              .from("provider_vehicles")
+              .select("provider_id")
+              .eq("plate", operationalVehiclePlate)
+              .maybeSingle();
+          if (plateError) {
+            throw plateError;
+          }
+          if (plateOwner) {
+            return Response.json(
+              {
+                message:
+                  "Já existe um prestador cadastrado com esta placa. Confira a placa do veículo.",
+                code: "plate_in_use",
+              },
+              { status: 409 }
+            );
+          }
+        }
+
+        // O usuário é criado sem disparar e-mail: a confirmação só é enviada
+        // depois que todos os dados do cadastro foram gravados, para que uma
+        // falha no meio do fluxo não deixe um e-mail de conta inexistente.
         stage = "create-auth-user";
-        const { data: signUpData, error: signUpError } =
-          await ctx.supabase.auth.signUp({
+        const { data: createdUser, error: createUserError } =
+          await ctx.supabaseAdmin.auth.admin.createUser({
             email,
             password: input.password,
-            options: { emailRedirectTo: EMAIL_REDIRECT_URL },
+            email_confirm: false,
           });
-        if (signUpError || !signUpData.user) {
+        if (createUserError || !createdUser.user) {
+          if (
+            (createUserError as { code?: string } | null)?.code ===
+            "email_exists"
+          ) {
+            return Response.json(
+              { message: "Já existe uma conta com este e-mail." },
+              { status: 409 }
+            );
+          }
           return Response.json(
             {
               message:
-                signUpError?.message ?? "Não foi possível criar a conta.",
+                createUserError?.message ?? "Não foi possível criar a conta.",
             },
             { status: 400 }
           );
         }
 
-        // Supabase returns identities: [] when email already exists (security measure)
-        if (
-          !signUpData.user.identities ||
-          signUpData.user.identities.length === 0
-        ) {
-          return Response.json(
-            { message: "Já existe uma conta com este e-mail." },
-            { status: 409 }
-          );
-        }
-
-        const userId = signUpData.user.id;
+        const userId = createdUser.user.id;
         stage = "verify-auth-user";
         let authUser: { id: string } | null = null;
         for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -361,8 +385,18 @@ export default {
             console.error("Cadastro financeiro pendente", { userId });
           }
         }
+        stage = "send-confirmation-email";
+        const { error: resendError } = await ctx.supabase.auth.resend({
+          type: "signup",
+          email,
+          options: { emailRedirectTo: EMAIL_REDIRECT_URL },
+        });
+        if (resendError) {
+          await ctx.supabaseAdmin.auth.admin.deleteUser(userId);
+          throw resendError;
+        }
         return Response.json(
-          { email, requiresEmailConfirmation: !signUpData.session },
+          { email, requiresEmailConfirmation: true },
           { status: 201 }
         );
       } catch (error) {
@@ -370,6 +404,18 @@ export default {
           stage,
           message: describeError(error),
         });
+        if ((error as { code?: string } | null)?.code === "23505") {
+          return Response.json(
+            {
+              message:
+                stage === "create-provider-towing-vehicle"
+                  ? "Já existe um prestador cadastrado com esta placa. Confira a placa do veículo."
+                  : "Já existe uma conta com estes dados.",
+              code: "duplicate_registration",
+            },
+            { status: 409 }
+          );
+        }
         return Response.json(
           {
             message:
