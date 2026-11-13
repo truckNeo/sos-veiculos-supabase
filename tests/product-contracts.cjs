@@ -44,6 +44,32 @@ await denied('select 1 from (select save_provider_business_profile(\'Workshop\',
 await denied('select save_provider_business_profile(\'Workshop\',\'Workshop LTDA\',\'85855000\',\'Av Meira\',\'2345\',null,\'Porto Meira\',\'Foz do Iguaçu\',\'PR\',0,true,array[\'engine\']::request_problem_type[])',[],/entre 1 e 700/);
 await admin();await denied('update provider_profiles set service_radius_km=701 where provider_id=$1',[id(2)],/check/);
 await user(1);
+// Reagendamento: horário original vale até a outra parte aceitar.
+await user(1);
+const rs=(await q(`select create_service_appointment_v2($1,$2,now()+interval '5 days',60,'Revisão',null) id`,[id(10),id(2)]))[0].id;
+await denied(`select propose_appointment_reschedule($1,now()+interval '6 days',60)`,[rs],/confirmados/);
+await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[rs]);
+await user(3);await denied(`select propose_appointment_reschedule($1,now()+interval '6 days',60)`,[rs],/indisponível/);
+await user(1);
+await denied(`select propose_appointment_reschedule($1,now()-interval '1 day',60)`,[rs],/inválida/);
+await q(`select propose_appointment_reschedule($1,now()+interval '6 days',90)`,[rs]);
+const before=(await q('select starts_at,proposed_starts_at,proposed_by from service_appointments where id=$1',[rs]))[0];
+ok(before.proposed_by===id(1)&&before.proposed_starts_at>before.starts_at,'proposal keeps original time');
+await denied(`select respond_appointment_reschedule($1,true)`,[rs],/Aguarde/);
+await user(2);
+ok((await q('select * from get_service_appointment_detail($1)',[rs]))[0].proposed_by===id(1),'detail exposes proposal');
+await denied(`select propose_appointment_reschedule($1,now()+interval '7 days',60)`,[rs],/pendente/);
+await q(`select respond_appointment_reschedule($1,true)`,[rs]);
+const after=(await q('select starts_at,ends_at,status,proposed_by from service_appointments where id=$1',[rs]))[0];
+ok(after.starts_at.getTime()===before.proposed_starts_at.getTime()&&after.status==='confirmed'&&after.proposed_by===null,'accept applies proposed time');
+ok((await q('select vehicle_odometer from get_service_appointment_detail($1)',[rs])).length===1,'detail exposes odometer column');
+await user(2);await q(`select propose_appointment_reschedule($1,now()+interval '8 days',60)`,[rs]);
+await user(1);await q(`select respond_appointment_reschedule($1,false)`,[rs]);
+ok((await q('select proposed_by from service_appointments where id=$1',[rs]))[0].proposed_by===null,'reject clears proposal');
+await q(`select propose_appointment_reschedule($1,now()+interval '9 days',60)`,[rs]);
+await q(`select respond_service_appointment($1,'cancelled')`,[rs]);
+ok((await q('select proposed_by from service_appointments where id=$1',[rs]))[0].proposed_by===null,'cancel clears proposal');
+await user(1);
 // Favorite notification regression: independent table/schema.
 await q('select create_favorite_mechanic_invite($1)',[id(2)]);
 await admin();ok((await q('select * from app_notifications')).length===1,'favorite inbox preserved');
