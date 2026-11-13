@@ -70,6 +70,37 @@ await q(`select propose_appointment_reschedule($1,now()+interval '9 days',60)`,[
 await q(`select respond_service_appointment($1,'cancelled')`,[rs]);
 ok((await q('select proposed_by from service_appointments where id=$1',[rs]))[0].proposed_by===null,'cancel clears proposal');
 await user(1);
+// Agenda do prestador: janelas, bloqueios, horários livres e enforcement.
+const dayD=(await q(`select to_char((now() at time zone 'America/Sao_Paulo')::date+3,'YYYY-MM-DD') d`))[0].d;
+const dayE=(await q(`select to_char((now() at time zone 'America/Sao_Paulo')::date+4,'YYYY-MM-DD') d`))[0].d;
+const allDays=JSON.stringify([0,1,2,3,4,5,6].flatMap(w=>[{weekday:w,start_time:'09:00',end_time:'12:00'},{weekday:w,start_time:'14:00',end_time:'18:00'}]));
+const at=(day,time)=>`('${day} ${time}'::timestamp at time zone 'America/Sao_Paulo')`;
+const slotCount=async day=>(await q(`select count(*)::int c from list_provider_available_slots($1,$2::date,60,$3)`,[id(2),day,id(10)]))[0].c;
+await user(1);
+await denied(`select save_provider_schedule('[]'::jsonb,'{}')`,[],/prestadores/);
+ok((await slotCount(dayD))===0,'no schedule => no listed slots');
+await user(2);
+await denied(`select save_provider_schedule('[{"weekday":1,"start_time":"09:00","end_time":"12:00"},{"weekday":1,"start_time":"11:00","end_time":"13:00"}]'::jsonb,'{}')`,[],/sobrepor/);
+await denied(`select save_provider_schedule('[{"weekday":1,"start_time":"18:00","end_time":"09:00"}]'::jsonb,'{}')`,[],/posterior/);
+await denied(`select save_provider_schedule('[{"weekday":9,"start_time":"09:00","end_time":"10:00"}]'::jsonb,'{}')`,[],/posterior/);
+await q(`select save_provider_schedule($1::jsonb,array[$2::date])`,[allDays,dayE]);
+await user(1);
+ok((await slotCount(dayD))===12,'slots follow the windows (5 + 7)');
+ok((await slotCount(dayE))===0,'blocked date has no slots');
+await denied(`select create_service_appointment_v2($1,$2,${at(dayD,'13:00')},60,'Fora da janela',null)`,[id(10),id(2)],/horário de atendimento/);
+await denied(`select create_service_appointment_v2($1,$2,${at(dayD,'11:30')},60,'Cruza o fim da janela',null)`,[id(10),id(2)],/horário de atendimento/);
+await denied(`select create_service_appointment_v2($1,$2,${at(dayE,'10:00')},60,'Data bloqueada',null)`,[id(10),id(2)],/não atende/);
+const sched=(await q(`select create_service_appointment_v2($1,$2,${at(dayD,'10:00')},60,'Dentro da janela',null) id`,[id(10),id(2)]))[0].id;
+ok((await slotCount(dayD))===9,'booked slot removes overlapping starts');
+await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[sched]);
+await user(1);
+await denied(`select propose_appointment_reschedule($1,${at(dayD,'13:00')},60)`,[sched],/horário de atendimento/);
+await q(`select propose_appointment_reschedule($1,${at(dayD,'15:00')},60)`,[sched]);
+await q(`select respond_service_appointment($1,'cancelled')`,[sched]);
+await user(2);await q(`select save_provider_schedule('[]'::jsonb,'{}')`);
+await user(1);
+ok((await q(`select count(*)::int c from provider_schedule_windows`))[0].c===0,'schedule cleared');
+await q(`select create_service_appointment_v2($1,$2,${at(dayD,'13:00')},60,'Sem agenda = sem restrição',null)`,[id(10),id(2)]);
 // Favorite notification regression: independent table/schema.
 await q('select create_favorite_mechanic_invite($1)',[id(2)]);
 await admin();ok((await q('select * from app_notifications')).length===1,'favorite inbox preserved');
