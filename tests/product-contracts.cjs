@@ -101,6 +101,44 @@ await user(2);await q(`select save_provider_schedule('[]'::jsonb,'{}')`);
 await user(1);
 ok((await q(`select count(*)::int c from provider_schedule_windows`))[0].c===0,'schedule cleared');
 await q(`select create_service_appointment_v2($1,$2,${at(dayD,'13:00')},60,'Sem agenda = sem restrição',null)`,[id(10),id(2)]);
+// Expiração de pedidos parados (24 h ou 2 h antes do horário) e lembrete na metade do prazo.
+await user(1);
+await denied(`select create_service_appointment_v2($1,$2,now()+interval '90 minutes',60,'Sem antecedência',null)`,[id(10),id(2)],/antecedência/);
+const mk=async(hours)=>(await q(`select create_service_appointment_v2($1,$2,now()+make_interval(hours=>$3),60,'Pedido parado',null) id`,[id(10),id(2),hours]))[0].id;
+const fresh=await mk(72);
+const old=await mk(100);
+await admin();
+await q(`update service_appointments set created_at=now()-interval '25 hours' where id=$1`,[old]);
+await user(2);
+await denied(`select respond_service_appointment($1,'confirmed')`,[old],/expirou/);
+await admin();
+ok((await q(`select expire_stale_appointment_requests() n`))[0].n===1,'only the stale request expires');
+ok((await q('select status from service_appointments where id=$1',[old]))[0].status==='expired','status expired');
+ok((await q('select status from service_appointments where id=$1',[fresh]))[0].status==='requested','recent request untouched');
+ok((await q(`select count(*)::int c from product_notifications where dedupe_key like 'appointment-expired:'||$1||':%'`,[old]))[0].c===2,'both parties notified of expiry');
+ok((await q(`select expire_stale_appointment_requests() n`))[0].n===0,'expiry is idempotent');
+await user(1);
+await q(`select create_service_appointment_v2($1,$2,(select starts_at from service_appointments where id=$3),60,'Horário liberado',null)`,[id(10),id(2),old]).then(()=>{checks++;});
+await admin();
+// Perto do horário: vence 2 h antes, antes das 24 h.
+const near=(await q(`select id from service_appointments where description='Horário liberado'`))[0].id;
+await q(`update service_appointments set starts_at=now()+interval '110 minutes',ends_at=now()+interval '170 minutes' where id=$1`,[near]);
+ok((await q(`select expire_stale_appointment_requests() n`))[0].n===1,'request expires 2h before start');
+// Lembrete na metade do prazo.
+const half=await(async()=>{await user(1);return mk(80);})();
+await admin();
+await q(`update service_appointments set created_at=now()-interval '13 hours' where id=$1`,[half]);
+await q('select enqueue_product_reminders()');
+const reminder=()=>q(`select id from product_notifications where dedupe_key='appointment-expiry-reminder:'||$1`,[half]);
+ok((await reminder()).length===1,'provider reminded at half of the term');
+await q('select enqueue_product_reminders()');ok((await reminder()).length===1,'reminder not duplicated');
+ok((await q('select product_notification_is_current($1) v',[(await reminder())[0].id]))[0].v,'reminder current while requested');
+ok((await q(`select count(*)::int c from product_notifications where dedupe_key='appointment-expiry-reminder:'||$1 and user_id=$2`,[half,id(2)]))[0].c===1,'reminder goes to provider');
+await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[half]);
+await admin();
+ok(!(await q('select product_notification_is_current($1) v',[(await reminder())[0].id]))[0].v,'reminder obsolete after response');
+await q(`update service_appointments set status='cancelled' where id=$1`,[half]);
+await user(1);
 // Favorite notification regression: independent table/schema.
 await q('select create_favorite_mechanic_invite($1)',[id(2)]);
 await admin();ok((await q('select * from app_notifications')).length===1,'favorite inbox preserved');
