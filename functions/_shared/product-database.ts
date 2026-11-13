@@ -14,6 +14,7 @@ export type ProductDatabase = {
     Functions:{
       enqueue_product_reminders:{Args:Record<string,never>;Returns:undefined};
       claim_product_notifications:{Args:Record<string,never>;Returns:ProductNotification[]};
+      claim_appointment_notification:{Args:{p_appointment_id:string;p_actor:string};Returns:ProductNotification[]};
       product_notification_is_current:{Args:{p_id:string};Returns:boolean};
       authorize_shared_attachment:{Args:{p_attachment_id:string};Returns:string|null};
     };

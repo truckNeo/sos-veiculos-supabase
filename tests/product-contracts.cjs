@@ -139,6 +139,22 @@ await admin();
 ok(!(await q('select product_notification_is_current($1) v',[(await reminder())[0].id]))[0].v,'reminder obsolete after response');
 await q(`update service_appointments set status='cancelled' where id=$1`,[half]);
 await user(1);
+// Push imediato: reserva só a notificação da outra parte, uma vez.
+await user(1);
+const pushAppt=(await q(`select create_service_appointment_v2($1,$2,now()+interval '10 days',60,'Push',null) id`,[id(10),id(2)]))[0].id;
+await denied(`select create_service_appointment_v2($1,$2,now()+interval '3 hours',60,'Curto',null)`,[id(10),id(2)],/4 horas/);
+await admin();
+const claim=async actor=>(await q('select * from claim_appointment_notification($1,$2)',[pushAppt,actor]));
+ok((await claim(id(2))).length===0,'provider acting has no notification to push to the driver yet');
+await denied('select * from claim_appointment_notification($1,$2)',[pushAppt,id(3)],/indisponível/);
+const forProvider=await claim(id(1));
+ok(forProvider.length===1&&forProvider[0].user_id===id(2),'driver action reserves the provider push');
+ok((await claim(id(1))).length===0,'reservation is not repeated while leased');
+await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[pushAppt]);
+await admin();
+ok((await q(`select title from product_notifications where resource_id=$1 and user_id=$2 and dedupe_key like '%:confirmed'`,[pushAppt,id(1)]))[0].title==='Agendamento confirmado','confirmation notification says what happened');
+await q(`update service_appointments set status='cancelled' where id=$1`,[pushAppt]);
+await user(1);
 // Favorite notification regression: independent table/schema.
 await q('select create_favorite_mechanic_invite($1)',[id(2)]);
 await admin();ok((await q('select * from app_notifications')).length===1,'favorite inbox preserved');
