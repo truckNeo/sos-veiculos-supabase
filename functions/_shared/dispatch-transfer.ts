@@ -15,36 +15,47 @@ export async function reconcileDispatchTransfer(
   const { data: transfer, error } = await admin
     .from("service_provider_transfers")
     .select(
-      "id,request_id,provider_id,provider_net_cents,status,asaas_transfer_id,created_at"
+      "id,request_id,appointment_id,provider_id,provider_net_cents,status,asaas_transfer_id,created_at"
     )
     .eq("id", transferId)
     .single();
   if (error || !transfer) throw new Error("Repasse não encontrado.");
   if (transfer.status === "completed") return { state: "completed" };
   if (transfer.status === "failed") return { state: "failed" };
+  const chargeQuery = admin
+    .from("service_payment_charges")
+    .select("asaas_sandbox,status,settled_at")
+    .eq("kind", "dispatch");
   const [
     { data: account },
     { data: charges, error: chargeError },
-    { data: request },
+    confirmedAt,
   ] = await Promise.all([
     admin
       .from("provider_asaas_accounts")
       .select("wallet_id,status,sandbox,financial_block_reason")
       .eq("provider_id", transfer.provider_id)
       .single(),
-    admin
-      .from("service_payment_charges")
-      .select("asaas_sandbox,status,settled_at")
-      .eq("request_id", transfer.request_id)
-      .eq("kind", "dispatch"),
-    admin
-      .from("service_requests")
-      .select("provider_arrival_confirmed_at")
-      .eq("id", transfer.request_id)
-      .single(),
+    transfer.request_id
+      ? chargeQuery.eq("request_id", transfer.request_id)
+      : chargeQuery.eq("appointment_id", transfer.appointment_id!),
+    // Chamado: chegada confirmada. Agendamento: liberação confirmada pelo motorista.
+    transfer.request_id
+      ? admin
+          .from("service_requests")
+          .select("provider_arrival_confirmed_at")
+          .eq("id", transfer.request_id)
+          .single()
+          .then(({ data }) => data?.provider_arrival_confirmed_at ?? null)
+      : admin
+          .from("service_appointments")
+          .select("fee_released_at")
+          .eq("id", transfer.appointment_id!)
+          .single()
+          .then(({ data }) => data?.fee_released_at ?? null),
   ]);
   if (
-    !request?.provider_arrival_confirmed_at ||
+    !confirmedAt ||
     !account?.wallet_id ||
     account.status !== "verified" ||
     account.sandbox !== isAsaasSandbox() ||

@@ -21,7 +21,8 @@ type Table<Row> = {
 type ServicePaymentCharge = {
   updated_at: string;
   id: string;
-  request_id: string;
+  request_id: string | null;
+  appointment_id: string | null;
   provider_id: string;
   kind: string;
   amount_cents: number;
@@ -41,7 +42,8 @@ type ServicePaymentCharge = {
 type ServiceProviderTransfer = {
   updated_at: string;
   id: string;
-  request_id: string;
+  request_id: string | null;
+  appointment_id: string | null;
   created_at: string;
   failure_reason: string | null;
   provider_id: string;
@@ -82,6 +84,11 @@ export type AsaasDatabase = {
       service_requests: Table<{
         id: string;
         provider_arrival_confirmed_at: string | null;
+      }>;
+      service_appointments: Table<{
+        id: string;
+        requester_id: string;
+        fee_released_at: string | null;
       }>;
       service_payment_charges: Table<ServicePaymentCharge>;
       service_provider_transfers: Table<ServiceProviderTransfer>;

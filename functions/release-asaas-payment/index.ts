@@ -6,11 +6,37 @@ import { reconcileDispatchTransfer } from "../_shared/dispatch-transfer.ts";
 export default {
   fetch: withSupabase<AsaasDatabase>({ auth: "user" }, async (request, ctx) => {
     if (request.method !== "POST") return new Response(null, { status: 405 });
-    let body: { requestId?: string; rating?: number; comment?: string | null };
+    let body: {
+      requestId?: string;
+      appointmentId?: string;
+      rating?: number;
+      comment?: string | null;
+    };
     try {
       body = await request.json();
     } catch {
       return Response.json({ message: "Dados inválidos." }, { status: 400 });
+    }
+    if (body.appointmentId) {
+      // Taxa de agendamento: a liberação já foi registrada ao confirmar a chegada/entrega.
+      const { data: transfer } = await ctx.supabase
+        .from("service_provider_transfers")
+        .select("id")
+        .eq("appointment_id", body.appointmentId)
+        .maybeSingle();
+      if (!transfer)
+        return Response.json({ state: "none" }, { status: 202 });
+      try {
+        const result = await reconcileDispatchTransfer(
+          ctx.supabaseAdmin,
+          transfer.id
+        );
+        return Response.json(result, {
+          status: result.state === "completed" ? 200 : 202,
+        });
+      } catch {
+        return Response.json({ state: "processing" }, { status: 202 });
+      }
     }
     if (!body.requestId)
       return Response.json(
