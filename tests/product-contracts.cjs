@@ -15,7 +15,6 @@ await q(`insert into provider_services(provider_id,problem_type) values($1,'engi
 await q(`insert into provider_locations(provider_id,latitude,longitude) values($1,-23,-46)`,[id(n)]);
 await q(`insert into provider_vehicles(provider_id,vehicle_type,plate,model,color) values($1,'service',$2,'Van','Branco')`,[id(n),`ABC1D2${n}`]);
 }
-await q(`insert into provider_asaas_accounts(provider_id,status,wallet_id) values($1,'verified','wallet_fee')`,[id(2)]);
 await q(`insert into favorite_mechanic_invites(driver_id,provider_id,status) values($1,$2,'accepted'),($3,$4,'pending')`,[id(1),id(2),id(1),id(4)]);
 await user(1);
 const plan=(await q(`insert into vehicle_maintenance_plans(vehicle_id,title,due_date,interval_days,due_odometer,interval_km) values($1,'Trocar óleo',current_date+90,180,100000,10000) returning *`,[id(10)]))[0];

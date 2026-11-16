@@ -55,7 +55,7 @@ Peças que **já servem sem mudança**, porque só usam `asaas_payment_id`: o we
 
 | Função | Comportamento |
 |---|---|
-| `confirm_service_appointment` (altera) | Em modo com taxa, cria a cobrança `pending` (`kind='dispatch'`, `appointment_id`), define `payment_due_at` e avisa o motorista ("Pague a taxa até X"). Exige que o prestador tenha conta Asaas `verified`; senão a confirmação com taxa é recusada com mensagem clara. |
+| `confirm_service_appointment` (altera) | Em modo com taxa, cria a cobrança `pending` (`kind='dispatch'`, `appointment_id`), define `payment_due_at` e avisa o motorista ("Pague a taxa até X"). Como no chamado, não exige conta Asaas `verified` na confirmação; a trava fica no pagamento (`create-asaas-pix`). |
 | `confirm_asaas_charge_payment` (altera) | Se a cobrança é de agendamento: grava `fee_paid_at`, cria a entrada `held` com `appointment_id`, escreve na timeline do agendamento (não em `service_request_events`) e notifica o prestador. Ramo de chamado fica intacto. |
 | `provider_appointment_action` (altera) | `heading` ("Estou a caminho") só com `fee_paid_at` preenchido, como já é feito nos chamados (`require_confirmed_payment_before_departure`). |
 | `confirm_appointment_fee_release(p_id)` (nova, driver) | Valida o estágio (chegada no onsite, entrega no pickup), cria `service_provider_transfers` com `appointment_id` e comissão de 10%, marca `fee_released_at`. Idempotente. |
