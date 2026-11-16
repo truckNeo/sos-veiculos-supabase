@@ -252,6 +252,14 @@ ok((await q('select status from service_appointments where id=$1',[wk]))[0].stat
 await q('select finish_service_appointment($1)',[wk]);
 ok((await q('select status, finished_at from service_appointments where id=$1',[wk]))[0].status==='completed','workshop finished by provider');
 await admin();ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key in ($2,$3)`,[wk,wk+':started',wk+':completed']))[0].n===2,'driver notified on start and finish');
+// Duração definida pelo mecânico.
+await user(1);await denied(`select set_provider_appointment_duration(60)`,[],/Apenas prestadores/);
+await user(2);await denied(`select set_provider_appointment_duration(5)`,[],/entre 15 minutos/);
+await q(`select set_provider_appointment_duration(90)`);
+await user(1);
+const dur=(await q(`select create_service_appointment_v2($1,$2,now()+interval '23 days',15,'Duração do mecânico',null) id`,[id(10),id(2)]))[0].id;
+await admin();ok((await q(`select extract(epoch from ends_at-starts_at)/60 m from service_appointments where id=$1`,[dur]))[0].m==90,'appointment length comes from the provider default, not the client');
+await q(`update provider_profiles set appointment_duration_minutes=60 where provider_id=$1`,[id(2)]);
 // Avaliação do atendimento na oficina.
 await user(1);
 await denied(`select review_service_appointment($1,9,'nota inválida')`,[wk],/nota/);
