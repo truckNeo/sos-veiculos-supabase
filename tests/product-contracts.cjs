@@ -220,5 +220,9 @@ await admin();ok((await q('select * from service_request_dispatches where reques
 await user(1);const current=(await q('select * from vehicle_maintenance_plans where id=$1',[plan.id]))[0];
 await denied('select complete_vehicle_maintenance_v2($1,$2,$3,100000,null,null)',[plan.id,current.occurrence_id,current.revision-1],/atualizado/);
 await admin();await q('select enqueue_product_reminders()');ok((await q("select * from vehicle_share_events where invite_id=$1 and event='expired'",[exp])).length===1,'expiration audited once');await q('select enqueue_product_reminders()');ok((await q("select * from vehicle_share_events where invite_id=$1 and event='expired'",[exp])).length===1,'no repeated expiry event');
+// Regressão: `ctx.user` não existe em @supabase/server; usar `ctx.user.id` lança TypeError e o push nunca sai.
+{const fs=require('node:fs'),path=require('node:path');const dir=path.join(__dirname,'..','supabase','functions');
+for(const fn of fs.readdirSync(dir)){const f=path.join(dir,fn,'index.ts');if(!fs.existsSync(f))continue;
+ok(!/ctx\.user\b(?!Claims)/.test(fs.readFileSync(f,'utf8').replace(/\/\/.*$/gm,'')),`${fn} must read ctx.userClaims, not ctx.user`);}}
 await admin();console.log(`PASS ${checks} product contract/security assertions using full migration history`);
 };

@@ -10,7 +10,7 @@ export default {
       .select('id, driver_id, provider_id')
       .eq('id', inviteId)
       .maybeSingle();
-    if (inviteError || !invite || invite.driver_id !== ctx.user.id) {
+    if (inviteError || !invite || invite.driver_id !== ((ctx.userClaims as {id?: string; sub?: string} | null | undefined)?.id ?? (ctx.userClaims as {sub?: string} | null | undefined)?.sub)) {
       return Response.json({message: 'Convite não encontrado ou sem permissão.'}, {status: 404});
     }
 

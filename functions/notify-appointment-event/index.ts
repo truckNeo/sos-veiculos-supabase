@@ -7,12 +7,16 @@ import type {ProductDatabase} from '../_shared/product-database.ts';
 export default {
   fetch: withSupabase<ProductDatabase>({auth: 'user'}, async (request, ctx) => {
     if (request.method !== 'POST') return new Response(null, {status: 405});
+    // O contexto expõe userClaims; `ctx.user` não existe e lançava TypeError antes da reserva.
+    const actorId = (ctx.userClaims as {id?: string; sub?: string} | null | undefined)?.id
+      ?? (ctx.userClaims as {sub?: string} | null | undefined)?.sub;
+    if (!actorId) return Response.json({message: 'Sessão inválida.'}, {status: 401});
     const {appointmentId} = await request.json() as {appointmentId?: string};
     if (!appointmentId) return Response.json({message: 'Agendamento obrigatório.'}, {status: 400});
 
     const {data: claimed, error} = await ctx.supabaseAdmin.rpc('claim_appointment_notification', {
       p_appointment_id: appointmentId,
-      p_actor: ctx.user.id,
+      p_actor: actorId,
     });
     if (error) return Response.json({message: 'Agendamento indisponível.'}, {status: 404});
 
