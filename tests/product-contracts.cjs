@@ -252,6 +252,19 @@ ok((await q('select status from service_appointments where id=$1',[wk]))[0].stat
 await q('select finish_service_appointment($1)',[wk]);
 ok((await q('select status, finished_at from service_appointments where id=$1',[wk]))[0].status==='completed','workshop finished by provider');
 await admin();ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key in ($2,$3)`,[wk,wk+':started',wk+':completed']))[0].n===2,'driver notified on start and finish');
+// Avaliação do atendimento na oficina.
+await user(1);
+await denied(`select review_service_appointment($1,9,'nota inválida')`,[wk],/nota/);
+await user(3);await denied(`select review_service_appointment($1,5,'não é o motorista')`,[wk],/indisponível/);
+await user(1);
+ok((await q('select has_review from get_service_appointment_detail($1)',[wk]))[0].has_review===false,'not reviewed yet');
+await q(`select review_service_appointment($1,4,'Serviço bom')`,[wk]);
+await q(`select review_service_appointment($1,1,'duplicada')`,[wk]);
+ok((await q('select has_review from get_service_appointment_detail($1)',[wk]))[0].has_review===true,'reviewed after submitting');
+await admin();ok((await q(`select count(*)::int n from reviews where appointment_id=$1`,[wk]))[0].n===1,'one review per appointment');
+ok(Number((await q('select average_rating from provider_profiles where provider_id=$1',[id(2)]))[0].average_rating)>0,'provider average includes the appointment review');
+await user(1);const notDone=(await q(`select create_service_appointment_v2($1,$2,now()+interval '25 days',60,'Ainda não feito',null) id`,[id(10),id(2)]))[0].id;
+await denied(`select review_service_appointment($1,5,'cedo demais')`,[notDone],/finalizar/);
 // Atraso do motorista: alerta aos 60 min, encerramento aos 90 min.
 await user(1);
 const late=(await q(`select create_service_appointment_v2($1,$2,now()+interval '21 days',60,'Chegada atrasada',null) id`,[id(10),id(2)]))[0].id;
