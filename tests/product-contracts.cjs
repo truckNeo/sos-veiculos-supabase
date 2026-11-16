@@ -14,6 +14,7 @@ await q(`insert into provider_services(provider_id,problem_type) values($1,'engi
 await q(`insert into provider_locations(provider_id,latitude,longitude) values($1,-23,-46)`,[id(n)]);
 await q(`insert into provider_vehicles(provider_id,vehicle_type,plate,model,color) values($1,'service',$2,'Van','Branco')`,[id(n),`ABC1D2${n}`]);
 }
+await q(`insert into favorite_mechanic_invites(driver_id,provider_id,status) values($1,$2,'accepted'),($3,$4,'pending')`,[id(1),id(2),id(1),id(4)]);
 await user(1);
 const plan=(await q(`insert into vehicle_maintenance_plans(vehicle_id,title,due_date,interval_days,due_odometer,interval_km) values($1,'Trocar óleo',current_date+90,180,100000,10000) returning *`,[id(10)]))[0];
 let reading=(await q(`select record_vehicle_odometer($1,99500,null,$2) id`,[id(10),id(20)]))[0].id;
@@ -85,6 +86,7 @@ await denied(`select save_provider_schedule('[{"weekday":1,"start_time":"18:00",
 await denied(`select save_provider_schedule('[{"weekday":9,"start_time":"09:00","end_time":"10:00"}]'::jsonb,'{}')`,[],/posterior/);
 await q(`select save_provider_schedule($1::jsonb,array[$2::date])`,[allDays,dayE]);
 await user(1);
+await denied(`select create_service_appointment_v2($1,$2,now()+interval '9 days',60,'Não favorito',null)`,[id(10),id(4)],/favoritos/);
 ok((await slotCount(dayD))===12,'slots follow the windows (5 + 7)');
 ok((await slotCount(dayE))===0,'blocked date has no slots');
 await denied(`select create_service_appointment_v2($1,$2,${at(dayD,'13:00')},60,'Fora da janela',null)`,[id(10),id(2)],/horário de atendimento/);
@@ -158,6 +160,7 @@ await user(1);
 // Favorite notification regression: independent table/schema.
 await q('select create_favorite_mechanic_invite($1)',[id(2)]);
 await admin();ok((await q('select * from app_notifications')).length===1,'favorite inbox preserved');
+await admin();await q(`update favorite_mechanic_invites set status='accepted' where driver_id=$1 and provider_id=$2`,[id(1),id(2)]);
 await user(1);
 const appt=(await q(`select create_service_appointment_v2($1,$2,now()+interval '1 day',60,'Troca de óleo',$3) id`,[id(10),id(2),plan.id]))[0].id;
 ok((await q('select vehicle_odometer from service_appointments where id=$1',[appt]))[0].vehicle_odometer===100000,'appointment snapshots vehicle km');
