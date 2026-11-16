@@ -5,7 +5,9 @@ export default {
     const {requestId} = await request.json() as {requestId?: string};
     if (!requestId) return Response.json({message: 'Chamado obrigatório.'}, {status: 400});
 
-    const userId = ctx.user?.id;
+    // `ctx.user` não existe; o contexto expõe userClaims.
+    const userId = (ctx.userClaims as {id?: string; sub?: string} | null | undefined)?.id
+      ?? (ctx.userClaims as {sub?: string} | null | undefined)?.sub;
     if (!userId) return Response.json({message: 'Sessão inválida.'}, {status: 401});
 
     const {data: serviceRequest, error: requestError} = await ctx.supabaseAdmin
