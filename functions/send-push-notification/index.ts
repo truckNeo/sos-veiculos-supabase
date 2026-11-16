@@ -50,11 +50,16 @@ export default {
     if (!tokens?.length) return Response.json({sent: 0});
     const accessToken = await getAccessToken(projectId, clientEmail, privateKey);
     let sent = 0;
+    const failures: {token: string; status: number; code: string | null; message: string | null}[] = [];
     for (const token of tokens) {
       const response = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {method: 'POST', headers: {Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json'}, body: JSON.stringify(buildFcmMessage(token.token, body.title, body.message, body.data ?? {}))});
-      if (response.ok) sent += 1;
-      else if ([400, 404].includes(response.status)) await ctx.supabaseAdmin.from('device_push_tokens').update({revoked_at: new Date().toISOString()}).eq('id', token.id);
+      if (response.ok) { sent += 1; continue; }
+      const detail = await response.json().catch(() => null) as {error?: {message?: string; status?: string; details?: {errorCode?: string}[]}} | null;
+      const code = detail?.error?.details?.find(item => item.errorCode)?.errorCode ?? detail?.error?.status ?? null;
+      failures.push({token: token.token.slice(0, 8), status: response.status, code, message: detail?.error?.message ?? null});
+      // Só token realmente inválido é revogado; erro de payload ou de credencial não pode apagar dispositivos.
+      if (code === 'UNREGISTERED' || (response.status === 404 && code !== 'NOT_FOUND_PROJECT')) await ctx.supabaseAdmin.from('device_push_tokens').update({revoked_at: new Date().toISOString()}).eq('id', token.id);
     }
-    return Response.json({sent, attempted: tokens.length});
+    return Response.json({sent, attempted: tokens.length, failures});
   }),
 };
