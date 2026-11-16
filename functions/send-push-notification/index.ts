@@ -12,7 +12,17 @@ const pemBytes = (pem: string) => {
   const binary = atob(raw);
   return Uint8Array.from(binary, char => char.charCodeAt(0));
 };
-const buildFcmMessage = (token: string, title: string, message: string, data: Record<string, string>) => ({message: {token, notification: {title: title.trim(), body: message.trim()}, data}});
+const buildFcmMessage = (token: string, title: string, message: string, data: Record<string, string>) => ({
+  message: {
+    token,
+    notification: {title: title.trim(), body: message.trim()},
+    data,
+    // Prioridade alta + canal de importância alta (criado no app) = banner com
+    // o app em segundo plano ou a tela apagada; no iOS, som padrão.
+    android: {priority: 'HIGH', notification: {channel_id: 'sos_default', color: '#071A3A'}},
+    apns: {headers: {'apns-priority': '10'}, payload: {aps: {sound: 'default'}}},
+  },
+});
 
 async function getAccessToken(projectId: string, clientEmail: string, privateKey: string) {
   const now = Math.floor(Date.now() / 1000);
