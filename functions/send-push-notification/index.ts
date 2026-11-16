@@ -31,7 +31,10 @@ async function getAccessToken(projectId: string, clientEmail: string, privateKey
   const key = await crypto.subtle.importKey('pkcs8', pemBytes(privateKey), {name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256'}, false, ['sign']);
   const signature = base64Url(new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, encoder.encode(`${header}.${claim}`))));
   const response = await fetch('https://oauth2.googleapis.com/token', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams({grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${header}.${claim}.${signature}`})});
-  if (!response.ok) throw new Error('Não foi possível autenticar no Firebase.');
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null) as {error?: string; error_description?: string} | null;
+    throw new Error(`Não foi possível autenticar no Firebase (${response.status} ${detail?.error ?? ''} ${detail?.error_description ?? ''}).`.replace(/\s+\)/, ')'));
+  }
   const data = await response.json() as {access_token?: string};
   if (!data.access_token) throw new Error('Token Firebase ausente.');
   return data.access_token;
@@ -48,7 +51,12 @@ export default {
     const {data: tokens, error} = await ctx.supabaseAdmin.from('device_push_tokens').select('id, token').in('user_id', body.userIds).is('revoked_at', null);
     if (error) return Response.json({message: 'Não foi possível carregar os dispositivos.'}, {status: 500});
     if (!tokens?.length) return Response.json({sent: 0});
-    const accessToken = await getAccessToken(projectId, clientEmail, privateKey);
+    let accessToken: string;
+    try {
+      accessToken = await getAccessToken(projectId, clientEmail, privateKey);
+    } catch (error) {
+      return Response.json({message: error instanceof Error ? error.message : 'Falha ao autenticar no Firebase.'}, {status: 502});
+    }
     let sent = 0;
     const failures: {token: string; status: number; code: string | null; message: string | null}[] = [];
     for (const token of tokens) {

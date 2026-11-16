@@ -41,7 +41,7 @@ export default {
               data: {type: notification.category, resourceId: notification.resource_id, notificationId: notification.id},
             },
           });
-          if (sendError || !result || Number(result.sent ?? 0) < 1 || result.sent < 1) {failed++; errors.push(result?.failures ?? sendError?.message ?? 'sem resposta'); continue;}
+          if (sendError || !result || Number(result.sent ?? 0) < 1 || result.sent < 1) {failed++; errors.push(result?.failures ?? (await (sendError as {context?: Response} | null)?.context?.json?.().catch(() => null)) ?? sendError?.message ?? 'sem resposta'); continue;}
         }
         const {error: updateError} = await ctx.supabaseAdmin.from('product_notifications')
           .update({push_sent_at: new Date().toISOString(), push_lease_until: null})
