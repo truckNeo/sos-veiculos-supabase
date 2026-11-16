@@ -172,7 +172,10 @@ await denied(`select convert_service_appointment($1,'engine','Troca de óleo',-2
 await denied(`select start_service_appointment($1,'engine')`,[appt],/indisponível/);
 await user(2);
 await denied(`select start_service_appointment($1,'engine')`,[appt],/confirmado/);
-await q(`select respond_service_appointment($1,'confirmed')`,[appt]);
+await denied(`select respond_service_appointment($1,'confirmed')`,[appt],/taxa de deslocamento/);
+await denied(`select confirm_service_appointment($1,null)`,[appt],/taxa de deslocamento/);
+await q(`select confirm_service_appointment($1,8000)`,[appt]);
+ok((await q('select travel_fee_cents from service_appointments where id=$1',[appt]))[0].travel_fee_cents===8000,'fee stored on confirmation');
 await denied(`select start_service_appointment($1,'engine')`,[appt],/30 minutos/);
 await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[appt]);
 await user(2);
@@ -223,7 +226,7 @@ ok((await q('select * from list_shared_vehicles()')).length===0,'access expires 
 await user(1);
 // A fresh agenda demonstrates cancellation/decline propagation without altering avulso requests.
 const another=(await q(`select create_service_appointment_v2($1,$2,now()+interval '2 days',60,'Nova revisão',null,'onsite',-23,-46,'Oficina confirmada') id`,[id(10),id(2)]))[0].id;
-await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[another]);await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[another]);await user(2);
+await user(2);await q(`select confirm_service_appointment($1,5000)`,[another]);await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[another]);await user(2);
 const second=(await q(`select start_service_appointment($1,'engine') id`,[another]))[0].id;
 await user(1);
 // A regra de "um atendimento ativo por vez" passou a barrar antes do gatilho
@@ -260,6 +263,73 @@ await user(1);
 const dur=(await q(`select create_service_appointment_v2($1,$2,now()+interval '23 days',15,'Duração do mecânico',null) id`,[id(10),id(2)]))[0].id;
 await admin();ok((await q(`select extract(epoch from ends_at-starts_at)/60 m from service_appointments where id=$1`,[dur]))[0].m==90,'appointment length comes from the provider default, not the client');
 await q(`update provider_profiles set appointment_duration_minutes=60 where provider_id=$1`,[id(2)]);
+// Logística: leva e traz (busca, serviço, entrega) e mecânico no local.
+await user(1);
+const pk=(await q(`select create_service_appointment_v2($1,$2,now()+interval '30 days',60,'Revisão com busca',null,'pickup',-23,-46,'Rua do motorista, 10') id`,[id(10),id(2)]))[0].id;
+ok((await q('select service_mode from service_appointments where id=$1',[pk]))[0].service_mode==='pickup','pickup mode stored');
+await denied(`select create_service_appointment_v2($1,$2,now()+interval '31 days',60,'Sem local',null,'pickup',null,null,null)`,[id(10),id(2)],/local/);
+await user(2);
+await denied(`select provider_appointment_action($1,'heading')`,[pk],/pronto para sair/);
+await q(`select confirm_service_appointment($1,9000)`,[pk]);
+await denied(`select provider_appointment_action($1,'heading')`,[pk],/2 horas/);
+await user(1);await denied(`select provider_appointment_action($1,'heading')`,[pk],/indisponível/);
+await user(2);await denied(`select provider_appointment_action($1,'bogus')`,[pk],/Ação inválida/);
+await admin();await q(`update service_appointments set starts_at=now()+interval '90 minutes',ends_at=now()+interval '150 minutes' where id=$1`,[pk]);
+await user(2);
+await denied(`select provider_appointment_action($1,'arrived')`,[pk],/a caminho/);
+await q(`select provider_appointment_action($1,'heading')`,[pk]);
+await q(`select provider_appointment_action($1,'heading')`,[pk]);
+ok((await q('select stage from service_appointments where id=$1',[pk]))[0].stage==='heading','provider heads to the pickup');
+// Atraso do mecânico: motorista aceita ou cancela.
+await denied(`select provider_appointment_action($1,'inform_delay',1)`,[pk],/entre 5 e 120|de 5 a 120/);
+await q(`select provider_appointment_action($1,'inform_delay',30)`,[pk]);
+await user(2);await denied(`select driver_appointment_action($1,'respond_delay',null,true)`,[pk],/indisponível/);
+await user(1);await denied(`select driver_appointment_action($1,'respond_delay')`,[pk],/aceitar ou cancelar/);
+await q(`select driver_appointment_action($1,'respond_delay',null,true)`,[pk]);
+ok((await q('select delay_status from service_appointments where id=$1',[pk]))[0].delay_status==='accepted','delay accepted');
+await user(1);await denied(`select driver_appointment_action($1,'confirm_pickup')`,[pk],/ainda não avisou/);
+await user(2);await q(`select provider_appointment_action($1,'arrived')`,[pk]);
+ok((await q('select delay_status from service_appointments where id=$1',[pk]))[0].delay_status===null,'delay cleared on arrival');
+await user(1);await q(`select driver_appointment_action($1,'confirm_pickup')`,[pk]);
+ok((await q('select status, stage from service_appointments where id=$1',[pk]))[0].stage==='in_workshop','pickup confirmed, vehicle in the workshop');
+await user(2);
+await denied(`select provider_appointment_action($1,'finish_service')`,[pk],/minutos/);
+await q(`select provider_appointment_action($1,'finish_service',25)`,[pk]);
+await user(1);await denied(`select driver_appointment_action($1,'choose_delivery',now()-interval '1 hour')`,[pk],/futuro/);
+await q(`select driver_appointment_action($1,'choose_delivery',null)`,[pk]);
+ok((await q('select stage, delivery_at, eta_minutes from service_appointments where id=$1',[pk]))[0].eta_minutes===25,'delivery chosen: now');
+await user(2);await q(`select provider_appointment_action($1,'propose_delivery',null,now()+interval '2 hours')`,[pk]);
+await user(1);await q(`select driver_appointment_action($1,'respond_delivery',null,true)`,[pk]);
+ok((await q('select delivery_at from service_appointments where id=$1',[pk]))[0].delivery_at!==null,'delivery proposal accepted');
+await user(1);await denied(`select driver_appointment_action($1,'confirm_delivery')`,[pk],/não avisou/);
+await user(2);await q(`select provider_appointment_action($1,'heading_delivery')`,[pk]);
+await q(`select provider_appointment_action($1,'arrived_delivery')`,[pk]);
+await user(1);await q(`select driver_appointment_action($1,'confirm_delivery')`,[pk]);
+ok((await q('select status from service_appointments where id=$1',[pk]))[0].status==='completed','pickup completed after the delivery was confirmed');
+await admin();ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and category='appointments'`,[pk]))[0].n>=8,'each step notifies the other side');
+await user(1);ok((await q('select has_review from get_service_appointment_detail($1)',[pk]))[0].has_review===false,'pickup can be reviewed after completion');
+ok((await q('select count(*)::int n from list_my_service_appointments()'))[0].n>=3,'driver lists their appointments');
+await user(2);ok((await q('select requester_name from list_my_service_appointments() where id=$1',[pk]))[0].requester_name==='User 1','provider list shows the driver name');
+await user(3);ok((await q('select count(*)::int n from list_my_service_appointments()'))[0].n===0,'strangers see no appointments');
+// Mecânico no local: o motorista confirma a chegada e o atendimento começa.
+await user(1);
+const os=(await q(`select create_service_appointment_v2($1,$2,now()+interval '32 days',60,'Serviço no local',null,'onsite',-23,-46,'Posto Boa Viagem') id`,[id(10),id(2)]))[0].id;
+await user(2);await q(`select confirm_service_appointment($1,7000)`,[os]);
+await admin();await q(`update service_appointments set starts_at=now()+interval '60 minutes',ends_at=now()+interval '120 minutes' where id=$1`,[os]);
+await user(2);await q(`select provider_appointment_action($1,'heading')`,[os]);await q(`select provider_appointment_action($1,'arrived')`,[os]);
+await user(1);await q(`select driver_appointment_action($1,'confirm_arrival')`,[os]);
+ok((await q('select status from service_appointments where id=$1',[os]))[0].status==='in_service','on-site service starts after the driver confirms the arrival');
+await user(2);await denied(`select provider_appointment_action($1,'finish_service',20)`,[os],/oficina/);
+await q(`select provider_appointment_action($1,'finish')`,[os]);
+ok((await q('select status from service_appointments where id=$1',[os]))[0].status==='completed','on-site finished by the provider');
+// Atraso recusado: o agendamento é cancelado.
+await user(1);
+const rf=(await q(`select create_service_appointment_v2($1,$2,now()+interval '33 days',60,'Atraso recusado',null,'onsite',-23,-46,'Rua B, 20') id`,[id(10),id(2)]))[0].id;
+await user(2);await q(`select confirm_service_appointment($1,6000)`,[rf]);
+await admin();await q(`update service_appointments set starts_at=now()+interval '60 minutes',ends_at=now()+interval '120 minutes' where id=$1`,[rf]);
+await user(2);await q(`select provider_appointment_action($1,'inform_delay',45)`,[rf]);
+await user(1);await q(`select driver_appointment_action($1,'respond_delay',null,false)`,[rf]);
+ok((await q('select status, cancel_reason from service_appointments where id=$1',[rf]))[0].cancel_reason==='delay_refused','refusing the delay cancels the appointment');
 // Avaliação do atendimento na oficina.
 await user(1);
 await denied(`select review_service_appointment($1,9,'nota inválida')`,[wk],/nota/);
