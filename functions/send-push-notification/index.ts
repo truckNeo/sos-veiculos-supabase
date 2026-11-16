@@ -8,7 +8,9 @@ const base64Url = (bytes: Uint8Array) => {
 };
 const jsonBase64 = (value: unknown) => base64Url(encoder.encode(JSON.stringify(value)));
 const pemBytes = (pem: string) => {
-  const raw = pem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, '');
+  // O segredo costuma ser colado com "\n" literais e/ou entre aspas (JSON da conta de serviço).
+  const raw = pem.replace(/\\n/g, '\n').replace(/["']/g, '')
+    .replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, '');
   const binary = atob(raw);
   return Uint8Array.from(binary, char => char.charCodeAt(0));
 };
