@@ -3,6 +3,7 @@ import type { AsaasDatabase } from "../_shared/asaas-database.ts";
 
 import { hmacDocument, normalizeDigits } from "../_shared/auth.ts";
 import { asaasMobilePhone } from "../_shared/phone.ts";
+import { syncAsaasAccountStatus } from "../_shared/account-sync.ts";
 import {
   isAsaasSandbox,
   asaasFetch,
@@ -112,7 +113,18 @@ export default {
               { status: 503 }
             );
         }
-        return Response.json({ status: existing.status, onboardingUrl });
+        let status: string = existing.status;
+        if (status === "verification_requested") {
+          // Aprovação feita no Asaas não chega por webhook: confere agora.
+          const synced = await syncAsaasAccountStatus(ctx.supabaseAdmin, {
+            provider_id: providerId,
+            status,
+            api_key_ciphertext: existing.api_key_ciphertext,
+            api_key_iv: existing.api_key_iv,
+          }).catch(() => "unavailable");
+          if (synced === "verified" || synced === "rejected") status = synced;
+        }
+        return Response.json({ status, onboardingUrl });
       }
 
       if (

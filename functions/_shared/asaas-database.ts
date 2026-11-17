@@ -115,6 +115,7 @@ export type AsaasDatabase = {
         bank_account: string | null;
         bank_account_digit: string | null;
         bank_account_type: string | null;
+        updated_at: string;
       }>;
       provider_asaas_withdrawals: Table<{
         created_at: string;

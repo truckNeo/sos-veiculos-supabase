@@ -2,6 +2,7 @@ import { withSupabase } from "npm:@supabase/server@1.4.1";
 import type { AsaasDatabase } from "../_shared/asaas-database.ts";
 import { refundAppointmentCharge } from "../_shared/appointment-refund.ts";
 import { reconcileDispatchTransfer } from "../_shared/dispatch-transfer.ts";
+import { syncAsaasAccountStatus } from "../_shared/account-sync.ts";
 import { reconcilePayment } from "../_shared/payment-reconciliation.ts";
 
 const safeEqual = (a: string, b: string) => {
@@ -22,7 +23,7 @@ export default {
         return Response.json({ message: "Não autorizado." }, { status: 401 });
     }
     const admin = ctx.supabaseAdmin;
-    const results = { payments: 0, refunds: 0, transfers: 0 };
+    const results = { payments: 0, refunds: 0, transfers: 0, accounts: 0 };
 
     const refunds = await admin
       .from("service_payment_charges")
@@ -71,6 +72,22 @@ export default {
         await reconcileDispatchTransfer(admin, row.id);
         results.transfers++;
       } catch { /* fica em conciliação */ }
+    }
+
+    // Cadastros financeiros em análise: o Asaas não avisa subcontas por webhook, então consultamos.
+    const accounts = await admin
+      .from("provider_asaas_accounts")
+      .select("provider_id,status,api_key_ciphertext,api_key_iv")
+      .eq("status", "verification_requested")
+      .lt("updated_at", new Date(Date.now() - 3 * 60_000).toISOString())
+      .order("updated_at")
+      .limit(10);
+    for (const row of accounts.data ?? []) {
+      try {
+        await admin.from("provider_asaas_accounts").update({ updated_at: new Date().toISOString() }).eq("provider_id", row.provider_id);
+        const state = await syncAsaasAccountStatus(admin, row);
+        if (state === "verified" || state === "rejected") results.accounts++;
+      } catch { /* a próxima rodada tenta de novo */ }
     }
     return Response.json(results);
   }),
