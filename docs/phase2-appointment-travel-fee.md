@@ -107,3 +107,10 @@ Cada etapa é um PR pequeno, migration com dry-run antes, e a validação no san
 2. Cobrança só por Pix na taxa, ou também cartão (o `create-asaas-pix` já suporta)? Sugestão: só Pix.
 3. Pode o prestador confirmar uma taxa antes de ter a conta Asaas aprovada? Sugestão: não, a confirmação com taxa é recusada até a conta estar `verified`.
 4. Até o reembolso (2c) existir, bloquear o cancelamento de agendamento com taxa paga? Sugestão: sim.
+
+## 9. Status de implementação
+
+- 2a (cobrança e trava da saída), 2b (repasse na chegada/entrega) e 2c (prazo, reembolso, retenção e disputa) implementadas e aplicadas.
+- Retenção: motorista cancela com o mecânico a caminho (e o mecânico dentro de 30 min do horário) = taxa retida; o prestador tem 48 h para `open_appointment_fee_dispute`; sem disputa a taxa volta ao motorista. A decisão da disputa é `decide_appointment_fee_dispute(id, 'provider'|'driver')` (service_role, sem tela de administração ainda).
+- Reembolso: `refund-appointment-fee` (app, após cancelar) e `process-appointment-fees` (pg_cron, quando há pendência) chamam `POST /payments/{id}/refund`; o webhook `PAYMENT_REFUNDED` fecha a carteira.
+- Pendente: validar tudo no sandbox do Asaas e só então ligar `FEE_MODES_ENABLED` para usuários reais.

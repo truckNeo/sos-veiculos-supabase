@@ -397,6 +397,51 @@ await user(2);await q('select start_service_appointment($1)',[early]);
 await admin();await q(`update service_appointments set starts_at=now()-interval '100 minutes',ends_at=now()-interval '40 minutes' where id=$1`,[early]);
 await q('select process_late_appointments()');
 ok((await q('select status from service_appointments where id=$1',[early]))[0].status==='in_service','started appointments are not closed as no-show');
+// Taxa: prazo vencido, reembolso, retenção e disputa.
+{
+const mkFee=async(days,fee=6000)=>{await user(1);const a=(await q(`select create_service_appointment_v2($1,$2,now()+interval '${days} days',60,'Taxa',null,'onsite',-23,-46,'Posto') id`,[id(10),id(2)]))[0].id;await user(2);await q('select confirm_service_appointment($1,$2)',[a,fee]);return a;};
+const head=async a=>{await admin();await q(`update service_appointments set starts_at=now()+interval '60 minutes',ends_at=now()+interval '120 minutes' where id=$1`,[a]);await user(2);await q(`select provider_appointment_action($1,'heading')`,[a]);};
+const st=async a=>{await admin();return (await q('select * from service_appointments where id=$1',[a]))[0];};
+const charge=async a=>(await q('select * from service_payment_charges where appointment_id=$1',[a]))[0];
+// prazo vencido
+let a=await mkFee(41);await admin();await q(`update service_appointments set payment_due_at=now()-interval '1 minute' where id=$1`,[a]);await q('select process_late_appointments()');
+let r=await st(a);ok(r.status==='cancelled'&&r.cancel_reason==='fee_unpaid','unpaid fee cancels the appointment at the deadline');ok((await charge(a)).status==='expired','never-issued charge expires');
+// cancelamento antes de sair: reembolso
+a=await mkFee(42);await payFee(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);r=await st(a);
+ok(r.fee_refund_requested_at&&!r.fee_retained_at,'driver cancel before departure refunds the fee');ok((await charge(a)).refund_requested_at&&(await charge(a)).refund_reason==='cancelled','refund recorded on the charge');
+const refunded=(await charge(a)).id;await q(`select record_payment_reversal($1,'REFUNDED')`,[refunded]);r=await st(a);
+ok(r.fee_refunded_at&&(await charge(a)).status==='cancelled'&&(await q('select status from provider_wallet_entries where charge_id=$1',[refunded]))[0].status==='reversed','confirmed refund reverses the wallet and closes the appointment fee');
+await q('select request_appointment_fee_refund($1,$2)',[a,'again']);ok((await q('select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key like $2',[a,'%fee-refund'])).every(x=>x.n===1),'refund request is idempotent');
+// motorista cancela com o mecânico a caminho: taxa retida e disputa
+a=await mkFee(43);await payFee(a);await head(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);r=await st(a);
+ok(r.fee_retained_at&&!r.fee_refund_requested_at,'driver cancel with the mechanic en route retains the fee');
+await user(1);await denied('select open_appointment_fee_dispute($1)',[a],/indisponível/);
+await user(2);await q('select open_appointment_fee_dispute($1)',[a]);
+await user(1);await denied('select decide_appointment_fee_dispute($1,$2)',[a,'driver'],/permission denied/);
+await admin();await q(`select decide_appointment_fee_dispute($1,'provider')`,[a]);
+ok((await q('select provider_net_cents from service_provider_transfers where appointment_id=$1',[a]))[0].provider_net_cents===5400,'dispute decided for the provider releases the fee');
+a=await mkFee(44);await payFee(a);await head(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);
+await user(2);await q('select open_appointment_fee_dispute($1)',[a]);await admin();await q(`select decide_appointment_fee_dispute($1,'driver')`,[a]);
+ok((await st(a)).fee_refund_requested_at,'dispute decided for the driver refunds the fee');
+// mecânico atrasado além de 30 min: reembolso mesmo a caminho
+a=await mkFee(45);await payFee(a);await head(a);await admin();await q(`update service_appointments set starts_at=now()-interval '40 minutes',ends_at=now()+interval '20 minutes' where id=$1`,[a]);
+await q('select process_late_appointments()');ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key like 'appointment-provider-late%'`,[a]))[0].n===1,'driver is told the mechanic passed the limit');
+await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);r=await st(a);ok(r.fee_refund_requested_at&&!r.fee_retained_at&&(await charge(a)).refund_reason==='provider_late','mechanic past 30 minutes refunds the fee');
+// atraso recusado
+a=await mkFee(46);await payFee(a);await head(a);await q(`select provider_appointment_action($1,'inform_delay',30)`,[a]);await user(1);await q(`select driver_appointment_action($1,'respond_delay',null,false)`,[a]);r=await st(a);
+ok(r.cancel_reason==='delay_refused'&&r.fee_refund_requested_at&&!r.fee_retained_at,'refused delay refunds the fee');
+// prestador cancela a caminho
+a=await mkFee(47);await payFee(a);await head(a);await user(2);await q(`select respond_service_appointment($1,'cancelled')`,[a]);ok((await st(a)).fee_refund_requested_at,'provider cancellation refunds the fee');
+// retenção sem disputa em 48 h volta ao motorista
+a=await mkFee(48);await payFee(a);await head(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);
+await admin();await q(`update service_appointments set fee_retained_at=now()-interval '49 hours' where id=$1`,[a]);await q('select process_late_appointments()');
+ok((await charge(a)).refund_reason==='retention_expired','retention without a dispute is refunded after 48 hours');
+await user(2);await denied('select open_appointment_fee_dispute($1)',[a],/Não há taxa retida/);
+// pagamento tardio de agendamento encerrado
+a=await mkFee(49);await admin();await q(`update service_payment_charges set status='awaiting_payment',asaas_payment_id='late_pay' where appointment_id=$1`,[a]);
+await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);await admin();await q(`select confirm_asaas_charge_payment('late_pay',null)`);
+ok((await charge(a)).status==='paid'&&(await st(a)).fee_refund_requested_at,'payment after the appointment closed is refunded automatically');
+}
 // Regressão: `ctx.user` não existe em @supabase/server; usar `ctx.user.id` lança TypeError e o push nunca sai.
 {const fs=require('node:fs'),path=require('node:path');const dir=path.join(__dirname,'..','supabase','functions');
 for(const fn of fs.readdirSync(dir)){const f=path.join(dir,fn,'index.ts');if(!fs.existsSync(f))continue;

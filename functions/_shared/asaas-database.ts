@@ -35,6 +35,7 @@ type ServicePaymentCharge = {
   asaas_sandbox: boolean;
   billing_method: string;
   settled_at: string | null;
+  refund_requested_at: string | null;
   financial_status: string | null;
   gateway_net_cents: number | null;
 };
