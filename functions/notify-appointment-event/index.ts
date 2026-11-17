@@ -23,6 +23,7 @@ export default {
     let sent = 0;
     let failed = 0;
     let skipped = 0;
+    const errors: unknown[] = [];
     for (const notification of claimed ?? []) {
       try {
         const {data: preference, error: preferenceError} = await ctx.supabaseAdmin
@@ -40,7 +41,7 @@ export default {
               data: {type: notification.category, resourceId: notification.resource_id, notificationId: notification.id},
             },
           });
-          if (sendError || !result || Number(result.sent ?? 0) < 1 || result.sent < result.attempted) {failed++; continue;}
+          if (sendError || !result || Number(result.sent ?? 0) < 1 || result.sent < 1) {failed++; errors.push(result?.failures ?? (await (sendError as {context?: Response} | null)?.context?.json?.().catch(() => null)) ?? sendError?.message ?? 'sem resposta'); continue;}
         }
         const {error: updateError} = await ctx.supabaseAdmin.from('product_notifications')
           .update({push_sent_at: new Date().toISOString(), push_lease_until: null})
@@ -48,6 +49,6 @@ export default {
         if (updateError) failed++; else if (enabled) sent++; else skipped++;
       } catch {failed++;}
     }
-    return Response.json({sent, failed, skipped});
+    return Response.json({sent, failed, skipped, errors});
   }),
 };

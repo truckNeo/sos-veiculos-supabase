@@ -1,11 +1,26 @@
 import {withSupabase} from 'npm:@supabase/server@1.4.1';
 import type {ProductDatabase} from '../_shared/product-database.ts';
 
+const safeEqual = (a: string, b: string) => {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+};
+
 // Authenticated scheduler, once a minute. Leases prevent concurrent claims.
 // Delivery is at-least-once: a crash after FCM may repeat a push on retry.
+// Chamado pelo pg_cron (header x-cron-secret) ou por um agendador externo com a
+// chave secreta. Publicar com --no-verify-jwt: o pg_net não envia JWT.
 export default {
-  fetch: withSupabase<ProductDatabase>({auth: 'secret'}, async (request, ctx) => {
+  fetch: withSupabase<ProductDatabase>({auth: ['secret', 'none']}, async (request, ctx) => {
     if (request.method !== 'POST') return new Response(null, {status: 405});
+    if (ctx.authMode === 'none') {
+      const expected = Deno.env.get('CRON_SECRET') ?? '';
+      if (!expected || !safeEqual(request.headers.get('x-cron-secret') ?? '', expected)) {
+        return Response.json({message: 'Não autorizado.'}, {status: 401});
+      }
+    }
     const {error: enqueueError} = await ctx.supabaseAdmin.rpc('enqueue_product_reminders');
     if (enqueueError) return Response.json({message: 'Falha ao gerar lembretes.'}, {status: 500});
     const {data: notifications, error} = await ctx.supabaseAdmin.rpc('claim_product_notifications');
@@ -28,7 +43,7 @@ export default {
             body: {userIds: [notification.user_id], title: notification.title, message: notification.body,
               data: {type: notification.category, resourceId: notification.resource_id, notificationId: notification.id}},
           });
-          if (sendError || !result || (Number(result.sent ?? 0) < 1 || result.sent < result.attempted)) {failed++; continue;}
+          if (sendError || !result || Number(result.sent ?? 0) < 1) {failed++; continue;}
         }
         const {error: updateError} = await ctx.supabaseAdmin.from('product_notifications')
           .update({push_sent_at: new Date().toISOString(), push_lease_until: null})

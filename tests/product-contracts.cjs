@@ -4,6 +4,7 @@ const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const q=async(sql,args=[]) => (await db.query(sql,args)).rows;
 const user=async n=>db.exec(`reset role;set role authenticated;select set_config('request.jwt.claim.sub','${id(n)}',false);`);
 const admin=async()=>db.exec('reset role');
+const payFee=async a=>{await admin();await q(`update service_payment_charges set status='awaiting_payment',asaas_payment_id='pay_'||id where appointment_id=$1`,[a]);await q(`select confirm_asaas_charge_payment('pay_'||(select id from service_payment_charges where appointment_id=$1),null)`,[a]);};
 let checks=0;const ok=(v,m)=>{assert.ok(v,m);checks++};const denied=async(sql,args,pattern)=>{await assert.rejects(q(sql,args),pattern);checks++};
 for(let n=1;n<=5;n++)await q(`insert into auth.users(id,email,email_confirmed_at) values($1,$2,now());`,[id(n),`u${n}@example.com`]);
 for(let n=1;n<=5;n++)await q(`insert into profiles(id,role,full_name,phone,document_hash,document_last4) values($1,$2,$3,$4,$5,'1234')`,[id(n),n===2||n===4?'provider':'driver',`User ${n}`,`1190000000${n}`,`fixture-${n}`]);
@@ -162,14 +163,31 @@ await q('select create_favorite_mechanic_invite($1)',[id(2)]);
 await admin();ok((await q('select * from app_notifications')).length===1,'favorite inbox preserved');
 await admin();await q(`update favorite_mechanic_invites set status='accepted' where driver_id=$1 and provider_id=$2`,[id(1),id(2)]);
 await user(1);
-const appt=(await q(`select create_service_appointment_v2($1,$2,now()+interval '1 day',60,'Troca de óleo',$3) id`,[id(10),id(2),plan.id]))[0].id;
-ok((await q('select vehicle_odometer from service_appointments where id=$1',[appt]))[0].vehicle_odometer===100000,'appointment snapshots vehicle km');
-await denied(`select convert_service_appointment($1,'engine','Troca de óleo',-23,-46,'Oficina confirmada')`,[appt],/horário/);
-await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[appt]);
+// O raio de atendimento usa PostGIS (simulado no PGlite), por isso é validado no ambiente real.
+await denied(`select create_service_appointment_v2($1,$2,now()+interval '1 day',60,'Sem local',$3,'onsite',null,null,null)`,[id(10),id(2),plan.id],/local/);
+await denied(`select create_service_appointment_v2($1,$2,now()+interval '1 day',60,'Modo inválido',$3,'voando')`,[id(10),id(2),plan.id],/levar o veículo/);
+const appt=(await q(`select create_service_appointment_v2($1,$2,now()+interval '1 day',60,'Troca de óleo',$3,'onsite',-23,-46,'Posto Boa Viagem') id`,[id(10),id(2),plan.id]))[0].id;
+ok((await q('select vehicle_odometer, service_mode, location_label from service_appointments where id=$1',[appt]))[0].vehicle_odometer===100000,'appointment snapshots vehicle km');
+ok((await q('select service_mode from service_appointments where id=$1',[appt]))[0].service_mode==='onsite','onsite mode stored');
+await denied(`select convert_service_appointment($1,'engine','Troca de óleo',-23,-46,'Oficina confirmada')`,[appt],/permission denied|indispon/);
+await denied(`select start_service_appointment($1,'engine')`,[appt],/indisponível/);
+await user(2);
+await denied(`select start_service_appointment($1,'engine')`,[appt],/confirmado/);
+await denied(`select respond_service_appointment($1,'confirmed')`,[appt],/taxa de deslocamento/);
+await denied(`select confirm_service_appointment($1,null)`,[appt],/taxa de deslocamento/);
+await q(`select confirm_service_appointment($1,8000)`,[appt]);
+ok((await q('select travel_fee_cents from service_appointments where id=$1',[appt]))[0].travel_fee_cents===8000,'fee stored on confirmation');
+await denied(`select start_service_appointment($1,'engine')`,[appt],/30 minutos/);
 await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[appt]);
+await user(2);
+await denied(`select start_service_appointment($1,null)`,[appt],/categoria/);
+const rid=(await q(`select start_service_appointment($1,'engine') id`,[appt]))[0].id;
+ok(rid!==null,'onsite start creates the request');
+ok((await q(`select start_service_appointment($1,'engine') id`,[appt]))[0].id===rid,'start retry same request');
+await admin();ok((await q('select requester_id, address_label from service_requests where id=$1',[rid]))[0].address_label==='Posto Boa Viagem','request uses the appointment location');
+await user(2);
+await denied(`select finish_service_appointment($1)`,[appt],/fluxo do chamado/);
 await user(1);
-const rid=(await q(`select convert_service_appointment($1,'engine','Troca de óleo',-23,-46,'Oficina confirmada') id`,[appt]))[0].id;
-ok((await q(`select convert_service_appointment($1,'engine','Troca de óleo',-23,-46,'Oficina confirmada') id`,[appt]))[0].id===rid,'conversion retry same request');
 await denied(`select respond_service_appointment($1,'completed')`,[appt],/vinculado/);
 await user(4);ok(!(await q('select * from get_nearby_service_requests()')).some(r=>r.id===rid),'targeted request not discoverable');
 await denied(`select submit_provider_dispatch_offer($1,100,10,null)`,[rid],/reservado/);
@@ -179,6 +197,7 @@ await user(2);ok((await q('select * from service_request_dispatches where reques
 await q(`select submit_provider_dispatch_offer($1,100,10,null)`,[rid]);
 await admin();await q(`update service_requests set status='completed',workflow_phase='completed',closed_at=now() where id=$1`,[rid]);
 ok((await q('select status from service_appointments where id=$1',[appt]))[0].status==='completed','request sync');
+ok((await q('select count(*)::int n from vehicle_maintenance_records where service_request_id=$1',[rid]))[0].n===1,'plan completed automatically after the on-site service');
 // Photo and financial attachment classification.
 await q(`insert into request_attachments(id,request_id,uploaded_by,kind,storage_path) values($1,$2,$3,'image','owner/request/photo.jpg'),($4,$2,$3,'payment_receipt','owner/request/receipt.jpg')`,[id(30),rid,id(1),id(31)]);
 await user(1);
@@ -193,7 +212,7 @@ await user(1);
 await denied(`select configure_vehicle_share($1,array['attachments'],null,array[$2::uuid])`,[legacy,id(31)],/técnicas/);
 await q(`select configure_vehicle_share($1,array['attachments','service_history','maintenance_history'],now()+interval '1 day',array[$2::uuid])`,[legacy,id(30)]);
 await user(3);
-ok((await q(`select * from list_shared_vehicle_history($1,'maintenance_history')`,[id(10)])).length===1,'shared maintenance history');
+ok((await q(`select * from list_shared_vehicle_history($1,'maintenance_history')`,[id(10)])).length===2,'shared maintenance history');
 ok((await q(`select * from list_shared_vehicle_history($1,'service_history')`,[id(10)])).length===1,'shared service history');
 ok((await q('select * from list_shared_attachments($1)',[id(10)])).length===1,'selected files only');
 ok((await q('select authorize_shared_attachment($1) path',[id(31)]))[0].path===null,'financial receipt denied');
@@ -207,9 +226,10 @@ await admin();await q(`update vehicle_share_invites set access_expires_at=now()-
 ok((await q('select * from list_shared_vehicles()')).length===0,'access expires after acceptance');
 await user(1);
 // A fresh agenda demonstrates cancellation/decline propagation without altering avulso requests.
-const another=(await q(`select create_service_appointment_v2($1,$2,now()+interval '2 days',60,'Nova revisão',null) id`,[id(10),id(2)]))[0].id;
-await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[another]);await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[another]);await user(1);
-const second=(await q(`select convert_service_appointment($1,'engine','Nova revisão',-23,-46,'Oficina confirmada') id`,[another]))[0].id;
+const another=(await q(`select create_service_appointment_v2($1,$2,now()+interval '2 days',60,'Nova revisão',null,'onsite',-23,-46,'Oficina confirmada') id`,[id(10),id(2)]))[0].id;
+await user(2);await q(`select confirm_service_appointment($1,5000)`,[another]);await admin();await q(`update service_appointments set starts_at=now()-interval '1 minute',ends_at=now()+interval '1 hour' where id=$1`,[another]);await user(2);
+const second=(await q(`select start_service_appointment($1,'engine') id`,[another]))[0].id;
+await user(1);
 // A regra de "um atendimento ativo por vez" passou a barrar antes do gatilho
 // de veículo agendado: continua recusado, com mensagem mais clara.
 await denied(`select * from open_service_request($1,'engine','Outro problema',-23,-46,'Oficina')`,[id(10)],/já tem um atendimento em andamento|agendado em aberto/);
@@ -220,6 +240,208 @@ await admin();ok((await q('select * from service_request_dispatches where reques
 await user(1);const current=(await q('select * from vehicle_maintenance_plans where id=$1',[plan.id]))[0];
 await denied('select complete_vehicle_maintenance_v2($1,$2,$3,100000,null,null)',[plan.id,current.occurrence_id,current.revision-1],/atualizado/);
 await admin();await q('select enqueue_product_reminders()');ok((await q("select * from vehicle_share_events where invite_id=$1 and event='expired'",[exp])).length===1,'expiration audited once');await q('select enqueue_product_reminders()');ok((await q("select * from vehicle_share_events where invite_id=$1 and event='expired'",[exp])).length===1,'no repeated expiry event');
+// Agendamento na oficina: o prestador inicia e finaliza; sem chamado.
+await admin();await q(`update service_requests set status='cancelled',workflow_phase='cancelled' where status not in ('completed','cancelled')`);
+await user(1);
+const wk=(await q(`select create_service_appointment_v2($1,$2,now()+interval '20 days',60,'Revisão na oficina',null) id`,[id(10),id(2)]))[0].id;
+ok((await q('select service_mode from service_appointments where id=$1',[wk]))[0].service_mode==='workshop','default mode is workshop');
+await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[wk]);
+ok((await q('select phone from get_appointment_contact($1)',[wk]))[0].phone==='11900000001','provider reads the driver contact');
+await user(1);ok((await q('select name from get_appointment_contact($1)',[wk]))[0].name==='Workshop','driver reads the provider contact');
+await user(3);await denied('select * from get_appointment_contact($1)',[wk],/indisponível/);
+await admin();await q(`update service_appointments set starts_at=now()-interval '10 minutes',ends_at=now()+interval '50 minutes' where id=$1`,[wk]);
+await user(1);await denied(`select start_service_appointment($1)`,[wk],/indisponível/);
+await user(2);ok((await q('select start_service_appointment($1) id',[wk]))[0].id===null,'workshop start has no request');
+ok((await q('select status from service_appointments where id=$1',[wk]))[0].status==='in_service','workshop in service');
+await q('select finish_service_appointment($1)',[wk]);
+ok((await q('select status, finished_at from service_appointments where id=$1',[wk]))[0].status==='completed','workshop finished by provider');
+await admin();ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key in ($2,$3)`,[wk,wk+':started',wk+':completed']))[0].n===2,'driver notified on start and finish');
+// Duração definida pelo mecânico.
+await user(1);await denied(`select set_provider_appointment_duration(60)`,[],/Apenas prestadores/);
+await user(2);await denied(`select set_provider_appointment_duration(5)`,[],/entre 15 minutos/);
+await q(`select set_provider_appointment_duration(90)`);
+await user(1);
+const dur=(await q(`select create_service_appointment_v2($1,$2,now()+interval '23 days',15,'Duração do mecânico',null) id`,[id(10),id(2)]))[0].id;
+await admin();ok((await q(`select extract(epoch from ends_at-starts_at)/60 m from service_appointments where id=$1`,[dur]))[0].m==90,'appointment length comes from the provider default, not the client');
+await q(`update provider_profiles set appointment_duration_minutes=60 where provider_id=$1`,[id(2)]);
+// Logística: leva e traz (busca, serviço, entrega) e mecânico no local.
+await user(1);
+const pk=(await q(`select create_service_appointment_v2($1,$2,now()+interval '30 days',60,'Revisão com busca',null,'pickup',-23,-46,'Rua do motorista, 10') id`,[id(10),id(2)]))[0].id;
+ok((await q('select service_mode from service_appointments where id=$1',[pk]))[0].service_mode==='pickup','pickup mode stored');
+await denied(`select create_service_appointment_v2($1,$2,now()+interval '31 days',60,'Sem local',null,'pickup',null,null,null)`,[id(10),id(2)],/local/);
+await user(2);
+await denied(`select provider_appointment_action($1,'heading')`,[pk],/pronto para sair/);
+await q(`select confirm_service_appointment($1,9000)`,[pk]);
+await denied(`select provider_appointment_action($1,'heading')`,[pk],/2 horas/);
+await user(1);await denied(`select provider_appointment_action($1,'heading')`,[pk],/indisponível/);
+await user(2);await denied(`select provider_appointment_action($1,'bogus')`,[pk],/Ação inválida/);
+await admin();await q(`update service_appointments set starts_at=now()+interval '90 minutes',ends_at=now()+interval '150 minutes' where id=$1`,[pk]);
+await user(2);
+await denied(`select provider_appointment_action($1,'heading')`,[pk],/pagamento da taxa/);
+ok((await q('select payment_due_at, fee_charge_id from service_appointments where id=$1',[pk]))[0].fee_charge_id!==null,'fee charge created on confirmation');
+await user(1);ok((await q('select amount_cents,status from service_payment_charges where appointment_id=$1',[pk]))[0].amount_cents===9000,'driver reads own appointment charge');
+await user(5);ok((await q('select * from service_payment_charges where appointment_id=$1',[pk])).length===0,'other drivers cannot read the charge');
+await payFee(pk);
+ok((await q('select fee_paid_at from service_appointments where id=$1',[pk]))[0].fee_paid_at!==null,'payment marks the appointment as paid');
+ok((await q(`select status,appointment_id from provider_wallet_entries where charge_id=(select fee_charge_id from service_appointments where id=$1)`,[pk]))[0].status==='held','fee held in the wallet');
+await q(`select confirm_asaas_charge_payment('pay_'||(select id from service_payment_charges where appointment_id=$1),null)`,[pk]);
+ok((await q('select count(*)::int n from provider_wallet_entries where appointment_id=$1',[pk]))[0].n===1,'payment confirmation is idempotent');
+await user(2);
+await denied(`select provider_appointment_action($1,'arrived')`,[pk],/a caminho/);
+await q(`select provider_appointment_action($1,'heading')`,[pk]);
+await q(`select provider_appointment_action($1,'heading')`,[pk]);
+ok((await q('select stage from service_appointments where id=$1',[pk]))[0].stage==='heading','provider heads to the pickup');
+// Atraso do mecânico: motorista aceita ou cancela.
+await denied(`select provider_appointment_action($1,'inform_delay',1)`,[pk],/entre 5 e 120|de 5 a 120/);
+await q(`select provider_appointment_action($1,'inform_delay',30)`,[pk]);
+await user(2);await denied(`select driver_appointment_action($1,'respond_delay',null,true)`,[pk],/indisponível/);
+await user(1);await denied(`select driver_appointment_action($1,'respond_delay')`,[pk],/aceitar ou cancelar/);
+await q(`select driver_appointment_action($1,'respond_delay',null,true)`,[pk]);
+ok((await q('select delay_status from service_appointments where id=$1',[pk]))[0].delay_status==='accepted','delay accepted');
+await user(1);await denied(`select driver_appointment_action($1,'confirm_pickup')`,[pk],/ainda não avisou/);
+await user(2);await q(`select provider_appointment_action($1,'arrived')`,[pk]);
+ok((await q('select delay_status from service_appointments where id=$1',[pk]))[0].delay_status===null,'delay cleared on arrival');
+await user(1);await q(`select driver_appointment_action($1,'confirm_pickup')`,[pk]);
+ok((await q('select status, stage from service_appointments where id=$1',[pk]))[0].stage==='in_workshop','pickup confirmed, vehicle in the workshop');
+await user(2);
+await denied(`select provider_appointment_action($1,'finish_service')`,[pk],/minutos/);
+await q(`select provider_appointment_action($1,'finish_service',25)`,[pk]);
+await user(1);await denied(`select driver_appointment_action($1,'choose_delivery',now()-interval '1 hour')`,[pk],/futuro/);
+await q(`select driver_appointment_action($1,'choose_delivery',null)`,[pk]);
+ok((await q('select stage, delivery_at, eta_minutes from service_appointments where id=$1',[pk]))[0].eta_minutes===25,'delivery chosen: now');
+await user(2);await q(`select provider_appointment_action($1,'propose_delivery',null,now()+interval '2 hours')`,[pk]);
+await user(1);await q(`select driver_appointment_action($1,'respond_delivery',null,true)`,[pk]);
+ok((await q('select delivery_at from service_appointments where id=$1',[pk]))[0].delivery_at!==null,'delivery proposal accepted');
+await user(1);await denied(`select driver_appointment_action($1,'confirm_delivery')`,[pk],/não avisou/);
+await user(2);await q(`select provider_appointment_action($1,'heading_delivery')`,[pk]);
+await q(`select provider_appointment_action($1,'arrived_delivery')`,[pk]);
+await admin();ok((await q('select count(*)::int n from service_provider_transfers where appointment_id=$1',[pk]))[0].n===0,'fee is not released before the delivery is confirmed');
+await user(1);await denied('select release_appointment_fee($1)',[pk],/permission denied/);
+await q(`select driver_appointment_action($1,'confirm_delivery')`,[pk]);
+await admin();
+{const t=(await q('select * from service_provider_transfers where appointment_id=$1',[pk]));
+ok(t.length===1&&t[0].gross_amount_cents===9000&&t[0].platform_fee_cents===900&&t[0].provider_net_cents===8100&&t[0].request_id===null,'delivery confirmation creates the fee transfer with the 10% commission');
+ok((await q('select fee_released_at from service_appointments where id=$1',[pk]))[0].fee_released_at!==null,'appointment records the release');
+ok((await q('select status from provider_wallet_entries where appointment_id=$1',[pk]))[0].status==='held','wallet stays held until the gateway transfer completes');
+await q(`update service_payment_charges set settled_at=now() where appointment_id=$1`,[pk]);
+await denied('select complete_dispatch_transfer($1,$2)',[t[0].id,'tr_fee'],/divergente/);
+await q(`update service_provider_transfers set asaas_transfer_id='tr_fee',status='processing' where id=$1`,[t[0].id]);
+await q('select complete_dispatch_transfer($1,$2)',[t[0].id,'tr_fee']);
+await q('select complete_dispatch_transfer($1,$2)',[t[0].id,'tr_fee']);
+const w=(await q('select status,platform_fee_cents,provider_net_cents from provider_wallet_entries where appointment_id=$1',[pk]))[0];
+ok(w.status==='available'&&w.platform_fee_cents===900&&w.provider_net_cents===8100,'completed transfer makes the net fee available');
+ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key like '%fee-released'`,[pk]))[0].n===1,'provider is told the fee was released');}
+await user(1);
+ok((await q('select status from service_appointments where id=$1',[pk]))[0].status==='completed','pickup completed after the delivery was confirmed');
+await admin();ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and category='appointments'`,[pk]))[0].n>=8,'each step notifies the other side');
+await user(1);ok((await q('select has_review from get_service_appointment_detail($1)',[pk]))[0].has_review===false,'pickup can be reviewed after completion');
+ok((await q('select count(*)::int n from list_my_service_appointments()'))[0].n>=3,'driver lists their appointments');
+await user(2);ok((await q('select requester_name from list_my_service_appointments() where id=$1',[pk]))[0].requester_name==='User 1','provider list shows the driver name');
+await user(3);ok((await q('select count(*)::int n from list_my_service_appointments()'))[0].n===0,'strangers see no appointments');
+// Mecânico no local: o motorista confirma a chegada e o atendimento começa.
+await user(1);
+const os=(await q(`select create_service_appointment_v2($1,$2,now()+interval '32 days',60,'Serviço no local',null,'onsite',-23,-46,'Posto Boa Viagem') id`,[id(10),id(2)]))[0].id;
+await user(2);await q(`select confirm_service_appointment($1,7000)`,[os]);
+await admin();await q(`update service_appointments set starts_at=now()+interval '60 minutes',ends_at=now()+interval '120 minutes' where id=$1`,[os]);
+await payFee(os);await user(2);await q(`select provider_appointment_action($1,'heading')`,[os]);await q(`select provider_appointment_action($1,'arrived')`,[os]);
+await user(1);await q(`select driver_appointment_action($1,'confirm_arrival')`,[os]);
+await admin();ok((await q('select provider_net_cents from service_provider_transfers where appointment_id=$1',[os]))[0].provider_net_cents===6300,'on-site arrival confirmation releases the fee');await user(1);
+ok((await q('select status from service_appointments where id=$1',[os]))[0].status==='in_service','on-site service starts after the driver confirms the arrival');
+await user(2);await denied(`select provider_appointment_action($1,'finish_service',20)`,[os],/oficina/);
+await q(`select provider_appointment_action($1,'finish')`,[os]);
+ok((await q('select status from service_appointments where id=$1',[os]))[0].status==='completed','on-site finished by the provider');
+// Atraso recusado: o agendamento é cancelado.
+await user(1);
+const rf=(await q(`select create_service_appointment_v2($1,$2,now()+interval '33 days',60,'Atraso recusado',null,'onsite',-23,-46,'Rua B, 20') id`,[id(10),id(2)]))[0].id;
+await user(2);await q(`select confirm_service_appointment($1,6000)`,[rf]);
+await admin();await q(`update service_appointments set starts_at=now()+interval '60 minutes',ends_at=now()+interval '120 minutes' where id=$1`,[rf]);
+await user(2);await q(`select provider_appointment_action($1,'inform_delay',45)`,[rf]);
+await user(1);await q(`select driver_appointment_action($1,'respond_delay',null,false)`,[rf]);
+ok((await q('select status, cancel_reason from service_appointments where id=$1',[rf]))[0].cancel_reason==='delay_refused','refusing the delay cancels the appointment');
+// Avaliação do atendimento na oficina.
+await user(1);
+await denied(`select review_service_appointment($1,9,'nota inválida')`,[wk],/nota/);
+await user(3);await denied(`select review_service_appointment($1,5,'não é o motorista')`,[wk],/indisponível/);
+await user(1);
+ok((await q('select has_review from get_service_appointment_detail($1)',[wk]))[0].has_review===false,'not reviewed yet');
+await q(`select review_service_appointment($1,4,'Serviço bom')`,[wk]);
+await q(`select review_service_appointment($1,1,'duplicada')`,[wk]);
+ok((await q('select has_review from get_service_appointment_detail($1)',[wk]))[0].has_review===true,'reviewed after submitting');
+await admin();ok((await q(`select count(*)::int n from reviews where appointment_id=$1`,[wk]))[0].n===1,'one review per appointment');
+ok(Number((await q('select average_rating from provider_profiles where provider_id=$1',[id(2)]))[0].average_rating)>0,'provider average includes the appointment review');
+await user(1);const notDone=(await q(`select create_service_appointment_v2($1,$2,now()+interval '25 days',60,'Ainda não feito',null) id`,[id(10),id(2)]))[0].id;
+await denied(`select review_service_appointment($1,5,'cedo demais')`,[notDone],/finalizar/);
+// Atraso do motorista: alerta aos 60 min, encerramento aos 90 min.
+await user(1);
+const late=(await q(`select create_service_appointment_v2($1,$2,now()+interval '21 days',60,'Chegada atrasada',null) id`,[id(10),id(2)]))[0].id;
+await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[late]);
+await admin();
+await q(`select process_late_appointments()`);
+ok((await q(`select count(*)::int n from product_notifications where dedupe_key like 'appointment-late:%' and resource_id=$1`,[late]))[0].n===0,'no late alert before 60 min');
+await q(`update service_appointments set starts_at=now()-interval '65 minutes',ends_at=now()-interval '5 minutes' where id=$1`,[late]);
+await q(`select process_late_appointments()`);
+ok((await q(`select count(*)::int n from product_notifications where dedupe_key like 'appointment-late:%' and resource_id=$1`,[late]))[0].n===2,'late alert goes to both sides');
+ok((await q(`select product_notification_is_current(id) ok from product_notifications where dedupe_key like 'appointment-late:%' and resource_id=$1 limit 1`,[late]))[0].ok===true,'late alert is current while waiting');
+ok((await q('select status from service_appointments where id=$1',[late]))[0].status==='confirmed','still confirmed at 65 min');
+await q(`update service_appointments set starts_at=now()-interval '95 minutes',ends_at=now()-interval '35 minutes' where id=$1`,[late]);
+await q(`select process_late_appointments()`);
+ok((await q('select status, cancel_reason from service_appointments where id=$1',[late]))[0].status==='no_show','closed as no_show at 90 min');
+ok((await q(`select product_notification_is_current(id) ok from product_notifications where dedupe_key like 'appointment-late:%' and resource_id=$1 limit 1`,[late]))[0].ok===false,'late alert no longer current after closing');
+ok((await q(`select count(*)::int n from product_notifications where dedupe_key like 'appointment-no-show:%' and resource_id=$1`,[late]))[0].n===2,'both notified of the no_show');
+// Um agendamento já iniciado nunca é encerrado por atraso.
+await user(1);
+const early=(await q(`select create_service_appointment_v2($1,$2,now()+interval '22 days',60,'Chegou a tempo',null) id`,[id(10),id(2)]))[0].id;
+await user(2);await q(`select respond_service_appointment($1,'confirmed')`,[early]);
+await admin();await q(`update service_appointments set starts_at=now()-interval '5 minutes',ends_at=now()+interval '55 minutes' where id=$1`,[early]);
+await user(2);await q('select start_service_appointment($1)',[early]);
+await admin();await q(`update service_appointments set starts_at=now()-interval '100 minutes',ends_at=now()-interval '40 minutes' where id=$1`,[early]);
+await q('select process_late_appointments()');
+ok((await q('select status from service_appointments where id=$1',[early]))[0].status==='in_service','started appointments are not closed as no-show');
+// Taxa: prazo vencido, reembolso, retenção e disputa.
+{
+const mkFee=async(days,fee=6000)=>{await user(1);const a=(await q(`select create_service_appointment_v2($1,$2,now()+interval '${days} days',60,'Taxa',null,'onsite',-23,-46,'Posto') id`,[id(10),id(2)]))[0].id;await user(2);await q('select confirm_service_appointment($1,$2)',[a,fee]);return a;};
+const head=async a=>{await admin();await q(`update service_appointments set starts_at=now()+interval '60 minutes',ends_at=now()+interval '120 minutes' where id=$1`,[a]);await user(2);await q(`select provider_appointment_action($1,'heading')`,[a]);};
+const st=async a=>{await admin();return (await q('select * from service_appointments where id=$1',[a]))[0];};
+const charge=async a=>(await q('select * from service_payment_charges where appointment_id=$1',[a]))[0];
+// prazo vencido
+let a=await mkFee(41);await admin();await q(`update service_appointments set payment_due_at=now()-interval '1 minute' where id=$1`,[a]);await q('select process_late_appointments()');
+let r=await st(a);ok(r.status==='cancelled'&&r.cancel_reason==='fee_unpaid','unpaid fee cancels the appointment at the deadline');ok((await charge(a)).status==='expired','never-issued charge expires');
+// cancelamento antes de sair: reembolso
+a=await mkFee(42);await payFee(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);r=await st(a);
+ok(r.fee_refund_requested_at&&!r.fee_retained_at,'driver cancel before departure refunds the fee');ok((await charge(a)).refund_requested_at&&(await charge(a)).refund_reason==='cancelled','refund recorded on the charge');
+const refunded=(await charge(a)).id;await q(`select record_payment_reversal($1,'REFUNDED')`,[refunded]);r=await st(a);
+ok(r.fee_refunded_at&&(await charge(a)).status==='cancelled'&&(await q('select status from provider_wallet_entries where charge_id=$1',[refunded]))[0].status==='reversed','confirmed refund reverses the wallet and closes the appointment fee');
+await q('select request_appointment_fee_refund($1,$2)',[a,'again']);ok((await q('select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key like $2',[a,'%fee-refund'])).every(x=>x.n===1),'refund request is idempotent');
+// motorista cancela com o mecânico a caminho: taxa retida e disputa
+a=await mkFee(43);await payFee(a);await head(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);r=await st(a);
+ok(r.fee_retained_at&&!r.fee_refund_requested_at,'driver cancel with the mechanic en route retains the fee');
+await user(1);await denied('select open_appointment_fee_dispute($1)',[a],/indisponível/);
+await user(2);await q('select open_appointment_fee_dispute($1)',[a]);
+await user(1);await denied('select decide_appointment_fee_dispute($1,$2)',[a,'driver'],/permission denied/);
+await admin();await q(`select decide_appointment_fee_dispute($1,'provider')`,[a]);
+ok((await q('select provider_net_cents from service_provider_transfers where appointment_id=$1',[a]))[0].provider_net_cents===5400,'dispute decided for the provider releases the fee');
+a=await mkFee(44);await payFee(a);await head(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);
+await user(2);await q('select open_appointment_fee_dispute($1)',[a]);await admin();await q(`select decide_appointment_fee_dispute($1,'driver')`,[a]);
+ok((await st(a)).fee_refund_requested_at,'dispute decided for the driver refunds the fee');
+// mecânico atrasado além de 30 min: reembolso mesmo a caminho
+a=await mkFee(45);await payFee(a);await head(a);await admin();await q(`update service_appointments set starts_at=now()-interval '40 minutes',ends_at=now()+interval '20 minutes' where id=$1`,[a]);
+await q('select process_late_appointments()');ok((await q(`select count(*)::int n from product_notifications where resource_id=$1 and dedupe_key like 'appointment-provider-late%'`,[a]))[0].n===1,'driver is told the mechanic passed the limit');
+await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);r=await st(a);ok(r.fee_refund_requested_at&&!r.fee_retained_at&&(await charge(a)).refund_reason==='provider_late','mechanic past 30 minutes refunds the fee');
+// atraso recusado
+a=await mkFee(46);await payFee(a);await head(a);await q(`select provider_appointment_action($1,'inform_delay',30)`,[a]);await user(1);await q(`select driver_appointment_action($1,'respond_delay',null,false)`,[a]);r=await st(a);
+ok(r.cancel_reason==='delay_refused'&&r.fee_refund_requested_at&&!r.fee_retained_at,'refused delay refunds the fee');
+// prestador cancela a caminho
+a=await mkFee(47);await payFee(a);await head(a);await user(2);await q(`select respond_service_appointment($1,'cancelled')`,[a]);ok((await st(a)).fee_refund_requested_at,'provider cancellation refunds the fee');
+// retenção sem disputa em 48 h volta ao motorista
+a=await mkFee(48);await payFee(a);await head(a);await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);
+await admin();await q(`update service_appointments set fee_retained_at=now()-interval '49 hours' where id=$1`,[a]);await q('select process_late_appointments()');
+ok((await charge(a)).refund_reason==='retention_expired','retention without a dispute is refunded after 48 hours');
+await user(2);await denied('select open_appointment_fee_dispute($1)',[a],/Não há taxa retida/);
+// pagamento tardio de agendamento encerrado
+a=await mkFee(49);await admin();await q(`update service_payment_charges set status='awaiting_payment',asaas_payment_id='late_pay' where appointment_id=$1`,[a]);
+await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);await admin();await q(`select confirm_asaas_charge_payment('late_pay',null)`);
+ok((await charge(a)).status==='paid'&&(await st(a)).fee_refund_requested_at,'payment after the appointment closed is refunded automatically');
+}
 // Regressão: `ctx.user` não existe em @supabase/server; usar `ctx.user.id` lança TypeError e o push nunca sai.
 {const fs=require('node:fs'),path=require('node:path');const dir=path.join(__dirname,'..','supabase','functions');
 for(const fn of fs.readdirSync(dir)){const f=path.join(dir,fn,'index.ts');if(!fs.existsSync(f))continue;
