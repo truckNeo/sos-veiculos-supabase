@@ -2,6 +2,7 @@ import { withSupabase } from "npm:@supabase/server@1.4.1";
 import type { AsaasDatabase } from "../_shared/asaas-database.ts";
 
 import { hmacDocument, normalizeDigits } from "../_shared/auth.ts";
+import { asaasMobilePhone } from "../_shared/phone.ts";
 import {
   isAsaasSandbox,
   asaasFetch,
@@ -146,6 +147,17 @@ export default {
           .trim()
           .slice(0, 80) || "Prestador SOS Veículos";
 
+      // O Asaas exige celular com DDD, sem +55; o perfil guarda o número com código do país.
+      const mobilePhone = asaasMobilePhone(profile.phone);
+      if (!mobilePhone)
+        return Response.json(
+          {
+            message:
+              "O telefone do seu perfil não é um celular válido com DDD. Atualize o telefone e envie de novo.",
+          },
+          { status: 400 }
+        );
+
       // Valida a cifra antes de criar uma conta externa.
       await encryptProviderApiKey("preflight");
       const reserved = await ctx.supabaseAdmin
@@ -165,9 +177,7 @@ export default {
           email,
           cpfCnpj: cnpj,
           companyType: "LIMITED",
-          mobilePhone: profile.phone
-            ? normalizeDigits(profile.phone)
-            : undefined,
+          mobilePhone,
           incomeValue: Number(input.estimatedRevenue),
           address: business.address_street ?? undefined,
           addressNumber: business.address_number ?? undefined,
@@ -179,6 +189,12 @@ export default {
         },
       });
       if (!createResponse.ok) {
+        // Recusa definitiva (4xx): nenhuma subconta existe, então libera a reserva para o reenvio.
+        if (createResponse.status >= 400 && createResponse.status < 500)
+          await ctx.supabaseAdmin
+            .from("provider_onboarding_attempts")
+            .delete()
+            .eq("provider_id", providerId);
         return Response.json(
           {
             message:
