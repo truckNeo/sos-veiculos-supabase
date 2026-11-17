@@ -442,6 +442,21 @@ a=await mkFee(49);await admin();await q(`update service_payment_charges set stat
 await user(1);await q(`select respond_service_appointment($1,'cancelled')`,[a]);await admin();await q(`select confirm_asaas_charge_payment('late_pay',null)`);
 ok((await charge(a)).status==='paid'&&(await st(a)).fee_refund_requested_at,'payment after the appointment closed is refunded automatically');
 }
+// Aprovação ou recusa do cadastro financeiro avisa o prestador.
+{
+await admin();
+await q(`insert into provider_asaas_accounts(provider_id,status) values($1,'verification_requested')`,[id(4)]);
+await q(`update provider_asaas_accounts set status='verified',verified_at=now() where provider_id=$1`,[id(4)]);
+const n=(await q(`select * from product_notifications where category='finance' and user_id=$1`,[id(4)]));
+ok(n.length===1&&n[0].title==='Conta financeira aprovada'&&n[0].resource_id===id(4),'approval notifies the provider');
+ok((await q('select product_notification_is_current($1) v',[n[0].id]))[0].v,'approval notice is current');
+await q(`update provider_asaas_accounts set status='verified' where provider_id=$1`,[id(4)]);
+ok((await q(`select count(*)::int c from product_notifications where category='finance'`))[0].c===1,'no duplicate approval notice');
+await q(`update provider_asaas_accounts set status='rejected',rejection_reason='Documento ilegível.' where provider_id=$1`,[id(4)]);
+const r=(await q(`select * from product_notifications where category='finance' and title='Cadastro financeiro recusado'`));
+ok(r.length===1&&/Documento ilegível/.test(r[0].body)&&(await q('select product_notification_is_current($1) v',[r[0].id]))[0].v,'rejection notifies with the reason');
+ok(!(await q('select product_notification_is_current($1) v',[n[0].id]))[0].v,'approval notice stops being current after a rejection');
+}
 // Regressão: `ctx.user` não existe em @supabase/server; usar `ctx.user.id` lança TypeError e o push nunca sai.
 {const fs=require('node:fs'),path=require('node:path');const dir=path.join(__dirname,'..','supabase','functions');
 for(const fn of fs.readdirSync(dir)){const f=path.join(dir,fn,'index.ts');if(!fs.existsSync(f))continue;

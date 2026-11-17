@@ -1,6 +1,6 @@
 /** Scoped contract for the product migrations; unrelated schemas are deliberately omitted. */
 type ProductNotification = {
-  id:string;user_id:string;category:'maintenance'|'appointments'|'sharing';title:string;body:string;resource_id:string;
+  id:string;user_id:string;category:'maintenance'|'appointments'|'sharing'|'finance';title:string;body:string;resource_id:string;
   push_claim:string|null;push_sent_at:string|null;push_lease_until:string|null;push_attempts:number;
 };
 type Table<Row> = {Row:Row;Insert:Partial<Row>;Update:Partial<Row>;Relationships:[]};
